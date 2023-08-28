@@ -18,6 +18,9 @@ def get_dataset_class(name):
     elif name == "kit":
         from data_loaders.humanml.data.dataset import KIT
         return KIT
+    elif name == 'biwi':
+        from data_loaders.biwi.data.dataset import biwi_data
+        return biwi_data
     else:
         raise ValueError(f'Unsupported dataset name [{name}]')
 

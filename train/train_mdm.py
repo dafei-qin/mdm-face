@@ -12,14 +12,16 @@ from train.training_loop import TrainLoop
 from data_loaders.get_data import get_dataset_loader
 from utils.model_util import create_model_and_diffusion
 from train.train_platforms import ClearmlPlatform, TensorboardPlatform, NoPlatform  # required for the eval operation
-
+from clearml import Task
+from torch.utils.tensorboard import SummaryWriter
 def main():
     args = train_args()
     fixseed(args.seed)
     train_platform_type = eval(args.train_platform_type)
     train_platform = train_platform_type(args.save_dir)
     train_platform.report_args(args, name='Args')
-
+    task = Task.init(project_name='mdm_biwi', task_name=args.task_name)
+    writer = SummaryWriter()
     if args.save_dir is None:
         raise FileNotFoundError('save_dir was not specified.')
     elif os.path.exists(args.save_dir) and not args.overwrite:
@@ -42,8 +44,9 @@ def main():
 
     print('Total params: %.2fM' % (sum(p.numel() for p in model.parameters_wo_clip()) / 1000000.0))
     print("Training...")
-    TrainLoop(args, train_platform, model, diffusion, data).run_loop()
+    TrainLoop(args, train_platform, model, diffusion, data).run_loop(writer)
     train_platform.close()
 
 if __name__ == "__main__":
+    
     main()

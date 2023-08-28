@@ -83,7 +83,7 @@ class Dataset(torch.utils.data.Dataset):
         # return inp, target
         return self._get_item_data_index(data_index)
 
-    def _load(self, ind, frame_ix):
+    def _load(self, ind, frame_ix): # This process the data format
         pose_rep = self.pose_rep
         if pose_rep == "xyz" or self.translation:
             if getattr(self, "_load_joints3D", None) is not None:
@@ -136,7 +136,7 @@ class Dataset(torch.utils.data.Dataset):
         ret = ret.permute(1, 2, 0).contiguous()
         return ret.float()
 
-    def _get_item_data_index(self, data_index):
+    def _get_item_data_index(self, data_index): # This samples same length clips
         nframes = self._num_frames_in_video[data_index]
 
         if self.num_frames == -1 and (self.max_len == -1 or nframes <= self.max_len):

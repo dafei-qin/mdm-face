@@ -1,4 +1,3 @@
-import copy
 import functools
 import os
 import time
@@ -55,7 +54,7 @@ class TrainLoop:
         self.sync_cuda = torch.cuda.is_available()
 
         self._load_and_sync_parameters()
-        self.mp_trainer = MixedPrecisionTrainer(
+        self.mp_trainer = MixedPrecisionTrainer(  # This function is provided by the diffusion package
             model=self.model,
             use_fp16=self.use_fp16,
             fp16_scale_growth=self.fp16_scale_growth,
@@ -124,18 +123,21 @@ class TrainLoop:
             )
             self.opt.load_state_dict(state_dict)
 
-    def run_loop(self):
-
+    def run_loop(self, writer):
         for epoch in range(self.num_epochs):
-            print(f'Starting epoch {epoch}')
-            for motion, cond in tqdm(self.data):
+            for batch_index, (motion, cond) in enumerate(self.data): # motion: (BS, joints, feat_dim, frames), 
+                # cond['y']:
+                # mask: (BS, 1, 1, frames) per frame weight?
+                # lengths: [frames] * BS
+                # action: (BS, 1])
+                # action_text: list((BS, 1))
                 if not (not self.lr_anneal_steps or self.step + self.resume_step < self.lr_anneal_steps):
                     break
 
                 motion = motion.to(self.device)
                 cond['y'] = {key: val.to(self.device) if torch.is_tensor(val) else val for key, val in cond['y'].items()}
 
-                self.run_step(motion, cond)
+                self.run_step(writer, epoch, batch_index, motion, cond)
                 if self.step % self.log_interval == 0:
                     for k,v in logger.get_current().name2val.items():
                         if k == 'loss':
@@ -203,13 +205,13 @@ class TrainLoop:
         print(f'Evaluation time: {round(end_eval-start_eval)/60}min')
 
 
-    def run_step(self, batch, cond):
-        self.forward_backward(batch, cond)
+    def run_step(self, writer, epoch, batch_index, batch, cond):
+        self.forward_backward(writer, epoch, batch_index, batch, cond)
         self.mp_trainer.optimize(self.opt)
         self._anneal_lr()
         self.log_step()
 
-    def forward_backward(self, batch, cond):
+    def forward_backward(self, writer, epoch, batch_index, batch, cond):
         self.mp_trainer.zero_grad()
         for i in range(0, batch.shape[0], self.microbatch):
             # Eliminates the microbatch feature
@@ -234,6 +236,7 @@ class TrainLoop:
             else:
                 with self.ddp_model.no_sync():
                     losses = compute_losses()
+            
 
             if isinstance(self.schedule_sampler, LossAwareSampler):
                 self.schedule_sampler.update_with_local_losses(
@@ -244,7 +247,11 @@ class TrainLoop:
             log_loss_dict(
                 self.diffusion, t, {k: v * weights for k, v in losses.items()}
             )
+            
             self.mp_trainer.backward(loss)
+            for key in losses.keys():
+                writer.add_scalar(key, losses[key].mean(), epoch *len(self.data) + batch_index)
+            writer.add_scalar('lr', self.lr, epoch *len(self.data) + batch_index)
 
     def _anneal_lr(self):
         if not self.lr_anneal_steps:

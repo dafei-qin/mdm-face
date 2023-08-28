@@ -28,7 +28,7 @@ def collate(batch):
         lenbatch = [len(b['inp'][0][0]) for b in notnone_batches]
 
 
-    databatchTensor = collate_tensors(databatch)
+        databatchTensor = collate_tensors(databatch)
     lenbatchTensor = torch.as_tensor(lenbatch)
     maskbatchTensor = lengths_to_mask(lenbatchTensor, databatchTensor.shape[-1]).unsqueeze(1).unsqueeze(1) # unqueeze for broadcasting
 
