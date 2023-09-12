@@ -134,6 +134,8 @@ class GaussianDiffusion:
         lambda_root_vel=0.,
         lambda_vel_rcxyz=0.,
         lambda_fc=0.,
+        lambda_masks=[],
+        masks=[],
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
@@ -152,9 +154,11 @@ class GaussianDiffusion:
         self.lambda_root_vel = lambda_root_vel
         self.lambda_vel_rcxyz = lambda_vel_rcxyz
         self.lambda_fc = lambda_fc
-
+        self.lambda_masks = lambda_masks
+        self.masks = masks
+        assert len(self.lambda_masks) == len(self.masks), 'lambda_mask and masks must have the same length!'
         if self.lambda_rcxyz > 0. or self.lambda_vel > 0. or self.lambda_root_vel > 0. or \
-                self.lambda_vel_rcxyz > 0. or self.lambda_fc > 0.:
+                self.lambda_vel_rcxyz > 0. or self.lambda_fc > 0. or len(self.lambda_masks) > 0:
             assert self.loss_type == LossType.MSE, 'Geometric losses are supported by MSE loss type only!'
 
         # Use float64 for accuracy.
@@ -202,7 +206,7 @@ class GaussianDiffusion:
         # assuming a.shape == b.shape == bs, J, Jdim, seqlen
         # assuming mask.shape == bs, 1, 1, seqlen
         loss = self.l2_loss(a, b)
-        loss = sum_flat(loss * mask.float())  # gives \sigma_euclidean over unmasked elements
+        loss = sum_flat(loss * mask.float().to(loss.device))  # gives \sigma_euclidean over unmasked elements
         n_entries = a.shape[1] * a.shape[2]
         non_zero_elements = sum_flat(mask) * n_entries
         # print('mask', mask.shape)
@@ -341,11 +345,6 @@ class GaussianDiffusion:
                     self.posterior_log_variance_clipped,
                 ),
             }[self.model_var_type]
-            # print('model_variance', model_variance)
-            # print('model_log_variance',model_log_variance)
-            # print('self.posterior_variance', self.posterior_variance)
-            # print('self.posterior_log_variance_clipped', self.posterior_log_variance_clipped)
-            # print('self.model_var_type', self.model_var_type)
 
 
             model_variance = _extract_into_tensor(model_variance, t, x.shape)
@@ -1307,47 +1306,17 @@ class GaussianDiffusion:
 
             target_xyz, model_output_xyz = None, None
 
-            if self.lambda_rcxyz > 0.:
-                target_xyz = get_xyz(target)  # [bs, nvertices(vertices)/njoints(smpl), 3, nframes]
-                model_output_xyz = get_xyz(model_output)  # [bs, nvertices, 3, nframes]
-                terms["rcxyz_mse"] = self.masked_l2(target_xyz, model_output_xyz, mask)  # mean_flat((target_xyz - model_output_xyz) ** 2)
+            self.masks = [mask.to(target.device) for mask in self.masks]
+            if len(self.lambda_masks) != 0:
+                for mask_idx in range(len(self.lambda_masks)):
+                    terms[f'mask_{mask_idx}'] = self.masked_l2(target, model_output, self.masks[mask_idx])
+            
+            terms["loss"] = terms["rot_mse"]
+            
+            for mask_idx in range(len(self.lambda_masks)):
+                terms['loss'] = terms['loss'] + (self.lambda_masks[mask_idx] * terms.get(f'mask_{mask_idx}', 0.))
 
-            if self.lambda_vel_rcxyz > 0.:
-                if self.data_rep == 'rot6d' and dataset.dataname in ['humanact12', 'uestc']:
-                    target_xyz = get_xyz(target) if target_xyz is None else target_xyz
-                    model_output_xyz = get_xyz(model_output) if model_output_xyz is None else model_output_xyz
-                    target_xyz_vel = (target_xyz[:, :, :, 1:] - target_xyz[:, :, :, :-1])
-                    model_output_xyz_vel = (model_output_xyz[:, :, :, 1:] - model_output_xyz[:, :, :, :-1])
-                    terms["vel_xyz_mse"] = self.masked_l2(target_xyz_vel, model_output_xyz_vel, mask[:, :, :, 1:])
-
-            if self.lambda_fc > 0.:
-                torch.autograd.set_detect_anomaly(True)
-                if self.data_rep == 'rot6d' and dataset.dataname in ['humanact12', 'uestc']:
-                    target_xyz = get_xyz(target) if target_xyz is None else target_xyz
-                    model_output_xyz = get_xyz(model_output) if model_output_xyz is None else model_output_xyz
-                    # 'L_Ankle',  # 7, 'R_Ankle',  # 8 , 'L_Foot',  # 10, 'R_Foot',  # 11
-                    l_ankle_idx, r_ankle_idx, l_foot_idx, r_foot_idx = 7, 8, 10, 11
-                    relevant_joints = [l_ankle_idx, l_foot_idx, r_ankle_idx, r_foot_idx]
-                    gt_joint_xyz = target_xyz[:, relevant_joints, :, :]  # [BatchSize, 4, 3, Frames]
-                    gt_joint_vel = torch.linalg.norm(gt_joint_xyz[:, :, :, 1:] - gt_joint_xyz[:, :, :, :-1], axis=2)  # [BatchSize, 4, Frames]
-                    fc_mask = torch.unsqueeze((gt_joint_vel <= 0.01), dim=2).repeat(1, 1, 3, 1)
-                    pred_joint_xyz = model_output_xyz[:, relevant_joints, :, :]  # [BatchSize, 4, 3, Frames]
-                    pred_vel = pred_joint_xyz[:, :, :, 1:] - pred_joint_xyz[:, :, :, :-1]
-                    pred_vel[~fc_mask] = 0
-                    terms["fc"] = self.masked_l2(pred_vel,
-                                                 torch.zeros(pred_vel.shape, device=pred_vel.device),
-                                                 mask[:, :, :, 1:])
-            if self.lambda_vel > 0.:
-                target_vel = (target[..., 1:] - target[..., :-1])
-                model_output_vel = (model_output[..., 1:] - model_output[..., :-1])
-                terms["vel_mse"] = self.masked_l2(target_vel[:, :-1, :, :], # Remove last joint, is the root location!
-                                                  model_output_vel[:, :-1, :, :],
-                                                  mask[:, :, :, 1:])  # mean_flat((target_vel - model_output_vel) ** 2)
-
-            terms["loss"] = terms["rot_mse"] + terms.get('vb', 0.) +\
-                            (self.lambda_vel * terms.get('vel_mse', 0.)) +\
-                            (self.lambda_rcxyz * terms.get('rcxyz_mse', 0.)) + \
-                            (self.lambda_fc * terms.get('fc', 0.))
+                            
 
         else:
             raise NotImplementedError(self.loss_type)

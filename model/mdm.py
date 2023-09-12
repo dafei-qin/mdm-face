@@ -4,20 +4,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 import clip
 from model.rotation2xyz import Rotation2xyz
-
+from model.wav2vec import Wav2Vec2Model
 
 
 class MDM(nn.Module):
     def __init__(self, modeltype, njoints, nfeats, num_actions, translation, pose_rep, glob, glob_rot,
                  latent_dim=256, ff_size=1024, num_layers=8, num_heads=4, dropout=0.1,
                  ablation=None, activation="gelu", legacy=False, data_rep='rot6d', dataset='amass', clip_dim=512,
-                 arch='trans_enc', emb_trans_dec=False, clip_version=None, **kargs):
+                 arch='trans_enc', emb_trans_dec=False, clip_version=None, num_frames=60, **kargs):
         super().__init__()
 
         self.legacy = legacy
         self.modeltype = modeltype
         self.njoints = njoints
         self.nfeats = nfeats
+        self.n_frames = num_frames
         self.num_actions = num_actions
         self.data_rep = data_rep
         self.dataset = dataset
@@ -51,9 +52,10 @@ class MDM(nn.Module):
 
         self.sequence_pos_encoder = PositionalEncoding(self.latent_dim, self.dropout)
         self.emb_trans_dec = emb_trans_dec
-
         if self.arch == 'trans_enc':
             print("TRANS_ENC init")
+            if 'audio' in self.cond_mode:
+                raise NotImplementedError
             seqTransEncoderLayer = nn.TransformerEncoderLayer(d_model=self.latent_dim,
                                                               nhead=self.num_heads,
                                                               dim_feedforward=self.ff_size,
@@ -64,11 +66,12 @@ class MDM(nn.Module):
                                                          num_layers=self.num_layers)
         elif self.arch == 'trans_dec':
             print("TRANS_DEC init")
+
             seqTransDecoderLayer = nn.TransformerDecoderLayer(d_model=self.latent_dim,
-                                                              nhead=self.num_heads,
-                                                              dim_feedforward=self.ff_size,
-                                                              dropout=self.dropout,
-                                                              activation=activation)
+                                                                nhead=self.num_heads,
+                                                                dim_feedforward=self.ff_size,
+                                                                dropout=self.dropout,
+                                                                activation=activation)
             self.seqTransDecoder = nn.TransformerDecoder(seqTransDecoderLayer,
                                                          num_layers=self.num_layers)
         elif self.arch == 'gru':
@@ -89,11 +92,23 @@ class MDM(nn.Module):
             if 'action' in self.cond_mode:
                 self.embed_action = EmbedAction(self.num_actions, self.latent_dim)
                 print('EMBED ACTION')
+            if 'audio' in self.cond_mode:
+                print('EMBED AUDIO')
+                print('Loading Wav2Vec2...')
+                self.audio_encoder = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base-960h")
+                # wav2vec 2.0 weights initialization
+                self.audio_encoder.feature_extractor._freeze_parameters()
+                if self.arch == 'trans_dec':
+                    self.audio_feature_map = nn.Linear(768, self.latent_dim)
+                else:
+                    self.audio_feature_map = nn.Linear(768 * self.n_frames, self.latent_dim)
+                # self.audio_feature_map = nn.Linear(768 * self.n_frames, self.latent_dim)
+                # self.embd_au = nn.Linear(self.)
 
         self.output_process = OutputProcess(self.data_rep, self.input_feats, self.latent_dim, self.njoints,
                                             self.nfeats)
-
-        self.rot2xyz = Rotation2xyz(device='cpu', dataset=self.dataset)
+        if dataset not in ['biwi', 'facs']:
+            self.rot2xyz = Rotation2xyz(device='cpu', dataset=self.dataset)
 
     def parameters_wo_clip(self):
         return [p for name, p in self.named_parameters() if not name.startswith('clip_model.')]
@@ -112,12 +127,15 @@ class MDM(nn.Module):
         return clip_model
 
     def mask_cond(self, cond, force_mask=False):
-        bs, d = cond.shape
+        if len(cond.shape) == 2:
+            bs, d = cond.shape
+        else:
+            seqlen, bs, d = cond.shape
         if force_mask:
             return torch.zeros_like(cond)
         elif self.training and self.cond_mask_prob > 0.:
             mask = torch.bernoulli(torch.ones(bs, device=cond.device) * self.cond_mask_prob).view(bs, 1)  # 1-> use null_cond, 0-> use real cond
-            return cond * (1. - mask)
+            return cond * (1. - mask).expand_as(cond)
         else:
             return cond
 
@@ -138,6 +156,17 @@ class MDM(nn.Module):
             texts = clip.tokenize(raw_text, truncate=True).to(device) # [bs, context_length] # if n_tokens > 77 -> will truncate
         return self.clip_model.encode_text(texts).float()
 
+    def encode_speech(self, raw_audio):
+        # device = next(self.parameters()).device
+        hidden_states = self.audio_encoder(raw_audio, dataset='biwi').last_hidden_state
+        hidden_states = hidden_states.reshape((hidden_states.shape[0], 2, hidden_states.shape[1] // 2, hidden_states.shape[2])).mean(axis=1)
+        hidden_states = hidden_states.transpose(0, 1)
+        if self.arch != 'trans_dec':
+            hidden_states = hidden_states.reshape((hidden_states.shape[0], -1)) # (BS, nframes * 768)
+
+        hidden_states = self.audio_feature_map(hidden_states) # (BS, 512)
+        return hidden_states.float()
+    
     def forward(self, x, timesteps, y=None):
         """
         x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
@@ -153,7 +182,13 @@ class MDM(nn.Module):
         if 'action' in self.cond_mode:
             action_emb = self.embed_action(y['action'])
             emb += self.mask_cond(action_emb, force_mask=force_mask)
+        if 'audio' in self.cond_mode:
+            enc_audio = self.encode_speech(y['au'])
+            # enc_audio = 
 
+            emb = emb +  self.mask_cond(enc_audio, force_mask=force_mask)
+
+            
         if self.arch == 'gru':
             x_reshaped = x.reshape(bs, njoints*nfeats, 1, nframes)
             emb_gru = emb.repeat(nframes, 1, 1)     #[#frames, bs, d]
@@ -176,6 +211,8 @@ class MDM(nn.Module):
                 xseq = x
             xseq = self.sequence_pos_encoder(xseq)  # [seqlen+1, bs, d]
             if self.emb_trans_dec:
+                # if 'audio' in self.cond_mode:
+                #     output = self.seqTransDecoder(tgt=xseq,memory=)
                 output = self.seqTransDecoder(tgt=xseq, memory=emb)[1:] # [seqlen, bs, d] # FIXME - maybe add a causal mask
             else:
                 output = self.seqTransDecoder(tgt=xseq, memory=emb)
@@ -190,12 +227,14 @@ class MDM(nn.Module):
 
     def _apply(self, fn):
         super()._apply(fn)
-        self.rot2xyz.smpl_model._apply(fn)
+        if self.dataset not in ['biwi', 'facs']:
+            self.rot2xyz.smpl_model._apply(fn)
 
 
     def train(self, *args, **kwargs):
         super().train(*args, **kwargs)
-        self.rot2xyz.smpl_model.train(*args, **kwargs)
+        if self.dataset not in ['biwi', 'facs']:
+            self.rot2xyz.smpl_model.train(*args, **kwargs)
 
 
 class PositionalEncoding(nn.Module):
@@ -249,7 +288,7 @@ class InputProcess(nn.Module):
         bs, njoints, nfeats, nframes = x.shape
         x = x.permute((3, 0, 1, 2)).reshape(nframes, bs, njoints*nfeats)
 
-        if self.data_rep in ['rot6d', 'xyz', 'hml_vec', 'face_verts']:
+        if self.data_rep in ['rot6d', 'xyz', 'hml_vec', 'face_verts', 'facs']:
             x = self.poseEmbedding(x)  # [seqlen, bs, d]
             return x
         elif self.data_rep == 'rot_vel':
@@ -284,7 +323,7 @@ class OutputProcess(nn.Module):
             vel = output[1:]  # [seqlen-1, bs, d]
             vel = self.velFinal(vel)  # [seqlen-1, bs, 150]
             output = torch.cat((first_pose, vel), axis=0)  # [seqlen, bs, 150]
-        elif self.data_rep == 'face_verts': # [seqlen, bs, 12666]
+        elif self.data_rep in ['face_verts', 'facs']: # [seqlen, bs, 12666]
             output = self.poseFinal(output)
         else:
             raise ValueError

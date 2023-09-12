@@ -28,7 +28,7 @@ def collate(batch):
         lenbatch = [len(b['inp'][0][0]) for b in notnone_batches]
 
 
-        databatchTensor = collate_tensors(databatch)
+    databatchTensor = collate_tensors(databatch)
     lenbatchTensor = torch.as_tensor(lenbatch)
     maskbatchTensor = lengths_to_mask(lenbatchTensor, databatchTensor.shape[-1]).unsqueeze(1).unsqueeze(1) # unqueeze for broadcasting
 
@@ -66,3 +66,73 @@ def t2m_collate(batch):
     return collate(adapted_batch)
 
 
+def verts_collate(batch):
+    databatch = [b['inp'] for b in batch]
+    
+    lenbatch = [b.shape[-1] for b in databatch]
+  
+
+
+    databatchTensor = torch.stack(databatch)
+    lenbatchTensor = torch.as_tensor(lenbatch)
+    maskbatchTensor = lengths_to_mask(lenbatchTensor, databatchTensor.shape[-1]).unsqueeze(1).unsqueeze(1) # unqueeze for broadcasting
+
+    motion = databatchTensor
+    cond = {'y': {'mask': maskbatchTensor, 'lengths': lenbatchTensor}}
+
+    if 'au' in batch[0]:
+        aubatch = [b['au'] for b in batch]
+        cond['y'].update({'au': torch.stack(aubatch)})
+
+    if 'au_raw' in batch[0]:
+        aurawbatch = [b['au_raw'] for b in batch]
+        cond['y'].update({'au_raw': torch.stack(aurawbatch)})
+        
+    if 'action' in batch[0]:
+        actionbatch = [b['action'] for b in batch]
+        cond['y'].update({'action': torch.as_tensor(actionbatch).unsqueeze(1)})
+
+    if 'ldmks' in batch[0]:
+        ldmks_batch = [b['ldmks'] for b in batch]
+        cond['y'].update({'ldmks': torch.stack(ldmks_batch)})
+
+    if 'trans' in batch[0]:
+        trans_batch = [b['trans'] for b in batch]
+        cond['y'].update({'trans': torch.stack(trans_batch)})
+
+
+    # collate action textual names
+    if 'action_text' in batch[0]:
+        action_text = [b['action_text']for b in batch]
+        cond['y'].update({'action_text': action_text})
+
+
+    return motion, cond
+
+def facs_collate(batch):
+    databatch = [b['inp'].unsqueeze(0) for b in batch]
+    
+    lenbatch = [b.shape[-1] for b in databatch]
+  
+
+
+    databatchTensor = torch.stack(databatch)
+    lenbatchTensor = torch.as_tensor(lenbatch)
+    maskbatchTensor = lengths_to_mask(lenbatchTensor, databatchTensor.shape[-1]).unsqueeze(1).unsqueeze(1) # unqueeze for broadcasting
+
+    motion = databatchTensor
+    cond = {'y': {'mask': maskbatchTensor, 'lengths': lenbatchTensor}}
+
+    if 'ldmks' in batch[0]:
+        ldmks_batch = [b['ldmks'] for b in batch]
+        cond['y'].update({'ldmks': torch.stack(ldmks_batch)})
+
+    if 'trans' in batch[0]:
+        trans_batch = [b['trans'] for b in batch]
+        cond['y'].update({'trans': torch.stack(trans_batch)})
+
+    if 'action_text' in batch[0]:
+        action_text = [b['action_text']for b in batch]
+        cond['y'].update({'action_text': action_text})
+    
+    return motion, cond  

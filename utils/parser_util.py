@@ -61,7 +61,6 @@ def add_base_options(parser):
     group.add_argument("--device", default=0, type=int, help="Device id to use.")
     group.add_argument("--seed", default=10, type=int, help="For fixing random seed.")
     group.add_argument("--batch_size", default=64, type=int, help="Batch size during training.")
-    group.add_argument("--task_name", help="Name of the current running task")
 
 
 def add_diffusion_options(parser):
@@ -94,12 +93,14 @@ def add_model_options(parser):
     group.add_argument("--unconstrained", action='store_true',
                        help="Model is trained unconditionally. That is, it is constrained by neither text nor action. "
                             "Currently tested on HumanAct12 only.")
+    group.add_argument("--cond_audio", action='store_true', help='Condition the model on audio inputs. Currently work on BIWI only')
 
-
+    group.add_argument("--num_frames", default=60, type=int,
+                       help="Limit for the maximal number of frames. In HumanML3D and KIT this field is ignored.")
 
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')
-    group.add_argument("--dataset", default='humanml', choices=['humanml', 'kit', 'humanact12', 'uestc', 'biwi'], type=str,
+    group.add_argument("--dataset", default='humanml', choices=['humanml', 'kit', 'humanact12', 'uestc', 'biwi', 'facs'], type=str,
                        help="Dataset name (choose from list).")
     group.add_argument("--data_dir", default="", type=str,
                        help="If empty, will use defaults according to the specified dataset.")
@@ -129,14 +130,21 @@ def add_training_options(parser):
                        help="If -1, will use all samples in the specified split.")
     group.add_argument("--log_interval", default=1_000, type=int,
                        help="Log losses each N steps")
-    group.add_argument("--save_interval", default=50_000, type=int,
+    group.add_argument("--save_interval", default=25_000, type=int,
                        help="Save checkpoints and run evaluation each N steps")
     group.add_argument("--num_steps", default=600_000, type=int,
                        help="Training will stop after the specified number of steps.")
-    group.add_argument("--num_frames", default=60, type=int,
-                       help="Limit for the maximal number of frames. In HumanML3D and KIT this field is ignored.")
+
     group.add_argument("--resume_checkpoint", default="", type=str,
                        help="If not empty, will start from the specified checkpoint (path to model###.pt file).")
+    group.add_argument("--render", default=False, action='store_true', help='if set, render the meshes during evaluation')
+    group.add_argument("--task_name", help="Name of the current running task", default='')
+    group.add_argument("--lambda_masks", default=[], nargs='*', help='lambda value for each mask to be used to calculate the metrics. Must has the same length as masks.')
+    group.add_argument("--masks", default=[], nargs='*', help='location of different masks.')
+    
+
+
+    
 
 
 def add_sampling_options(parser):
@@ -166,6 +174,8 @@ def add_generate_options(parser):
                        help="Path to a text file that lists names of actions to be synthesized. Names must be a subset of dataset/uestc/info/action_classes.txt if sampling from uestc, "
                             "or a subset of [warm_up,walk,run,jump,drink,lift_dumbbell,sit,eat,turn steering wheel,phone,boxing,throw] if sampling from humanact12. "
                             "If no file is specified, will take action names from dataset.")
+    group.add_argument("--audio_file", default='', type=str,
+                       help="Path to a text file that lists names of audios being synthesized. Names must be .wav files. If action_files are specified then the audio condition is applied for each action(identity).")
     group.add_argument("--text_prompt", default='', type=str,
                        help="A text prompt to be generated. If empty, will take text prompts from dataset.")
     group.add_argument("--action_name", default='', type=str,
@@ -209,6 +219,12 @@ def get_cond_mode(args):
         cond_mode = 'text'
     else:
         cond_mode = 'action'
+    if args.cond_audio:
+        if args.dataset != 'biwi':
+            print('Error, audio condition only supports BIWI dataset')
+            raise NotImplementedError
+        cond_mode = [cond_mode, 'audio']
+
     return cond_mode
 
 
@@ -233,9 +249,11 @@ def generate_args():
 
     if (args.input_text or args.text_prompt) and cond_mode != 'text':
         raise Exception('Arguments input_text and text_prompt should not be used for an action condition. Please use action_file or action_name.')
-    elif (args.action_file or args.action_name) and cond_mode != 'action':
+    elif (args.action_file or args.action_name) and (cond_mode != 'action' and 'action' not in cond_mode):
         raise Exception('Arguments action_file and action_name should not be used for a text condition. Please use input_text or text_prompt.')
-
+    
+    if args.audio_file and 'audio' not in cond_mode:
+        raise Exception('Arguments audio_file can only be used if the model is trained with audio condition.')
     return args
 
 

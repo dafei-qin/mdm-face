@@ -4,8 +4,9 @@ import os
 import random
 import torch
 from data_loaders.a2m.dataset import Dataset
-
-
+from glob import glob
+from transformers import Wav2Vec2Processor
+import soundfile as sf
 class biwi_data(Dataset):
     dataname = "biwi"
 
@@ -13,48 +14,73 @@ class biwi_data(Dataset):
         self.datapath = datapath
 
         super().__init__(**kargs)
+        self.processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h")
         self._pose = {}
         self._num_frames_in_video = {}
         self._actions = {}
-        for data_type in ['train', 'val', 'test']:
-            pkldatafilepath = os.path.join(datapath, f"{data_type}.pkl")
-            data = pkl.load(open(pkldatafilepath, "rb"))
+        files = glob(os.path.join(datapath, '*au.npy'))
+        files = [f.replace('_au.npy', '') for f in files]
+        identities = {os.path.basename(f).split('_')[0] for f in files}
+        identities = sorted(list(identities))
+        fps2ar = 16000 / 25
+        _train = {'pose':[], 'au':[], 'name':[], 'iden':[]}
+        _val =   {'pose':[], 'au':[], 'name':[], 'iden':[]}
+        _test =  {'pose':[], 'au':[], 'name':[], 'iden':[]}
 
-            _pose = []
-            for key in sorted(data.keys()):
-                _pose += data[key]
-            self._pose[data_type] = _pose
-            # self._pose = [x for data_list in data.values() for x in data_list]
-            self._num_frames_in_video[data_type] = [p.shape[0] for p in self._pose[data_type]]
-            # self._joints = [self._pose[0].shape[-1]] * len(self._pose) # [nvertices(vertices)/njoints(smpl), 3, nframes]
 
-            _actions = []
-            for idx, iden in enumerate(sorted(data.keys())):
-                _actions += [idx] * len(data[iden])
-            self._actions[data_type] = _actions
-            
-        total_num_actions = len(data.keys())
+        def load_sequence(fps2ar, iden, iden_sequences, idx, out):
+            pose = np.load(iden_sequences[idx] + '.npy').astype(np.float32)
+            au = np.load(iden_sequences[idx] + '_au.npy').astype(np.float32)
+            frames_pose = len(pose)
+            frames_au = len(au) / fps2ar
+            # if np.abs(frames_pose - frames_au) > 5: # Drop sequence in which the two sequences length have 5 frames of difference
+            #     return out
+            min_frames = np.floor(np.min((frames_pose, frames_au))).astype(int)
+            min_ar = (min_frames * fps2ar).astype(int)
+            out['pose'].append(pose[:min_frames])
+            out['au'].append(au[:min_ar])
+            out['name'].append(os.path.basename(iden_sequences[idx]).split('_')[-1])
+            out['iden'].append(iden)
+            return out
+
+
+        for iden in identities:
+            iden_sequences = [f for f in files if iden in f]
+            for idx in range(len(iden_sequences) - 4):
+                load_sequence(fps2ar, iden, iden_sequences, idx, _train)
+            for idx in range(len(iden_sequences) - 4, len(iden_sequences) - 2):
+                load_sequence(fps2ar, iden, iden_sequences, idx, _val)
+            for idx in range(len(iden_sequences) - 2, len(iden_sequences)):
+                load_sequence(fps2ar, iden, iden_sequences, idx, _test)
+        
+        self._pose = _train['pose'] + _val['pose'] + _test['pose']
+        self._au = _train['au'] + _val['au'] + _test['au']
+        self._name = _train['name'] + _val['name'] + _test['name']
+        self._iden = _train['iden'] + _val['iden'] + _test['iden']
+        self._train = np.arange(len(_train['pose']))
+        self._val = np.arange(len(_train['pose']), len(_train['pose']) + len(_val['pose']))
+        self._test = np.arange(len(_train['pose']) + len(_val['pose']), len(_train['pose']) + len(_val['pose']) + len(_test['pose']))
+        self._num_frames_in_video = [len(p) for p in self._pose]
+        total_num_actions = len(identities)
         self.num_actions = total_num_actions
+        keep_actions = {name:idx for idx, name in enumerate(identities)}
+        self._actions = [keep_actions[name] for name in self._iden]
+        self._action_classes = {idx:key for idx, key in enumerate(identities)}
+        self._action_to_label = keep_actions
+        self._label_to_action = {value:key for key, value in keep_actions.items()}
+        print(f'Loaded BIWI dataset, total num of sequences: [train]: {len(self._train)}, [val]: {len(self._val)}, [test]: {len(self._test)}')
 
-        self._train = np.arange(len(self._pose['train']))
-        self._val = np.arange(len(self._pose['val'])) + len(self._pose['train'])
-        self._test = np.arange(len(self._pose['test'])) + len(self._pose['train']) + len(self._pose['val'])
-        
-        # Convert back to a single list
-        self._pose = [*self._pose['train'], *self._pose['val'], *self._pose['test']]
-        self._num_frames_in_video = [*self._num_frames_in_video['train'], *self._num_frames_in_video['val'], *self._num_frames_in_video['test']]
-        self._actions = [*self._actions['train'], *self._actions['val'], *self._actions['test']]
-        
-                                         
-        keep_actions = np.arange(0, total_num_actions)
 
         self._action_to_label = {x: i for i, x in enumerate(keep_actions)}
         self._label_to_action = {i: x for i, x in enumerate(keep_actions)}
 
-        self._action_classes = {idx:key for idx, key in enumerate(sorted(data.keys()))}
+        
 
     def __len__(self):
-        return len(self._train)
+        if self.split == 'train':
+            return len(self._train)
+        else:
+            return len(self._val)
     
     def __getitem__(self, index):
         if self.split == 'train':
@@ -124,11 +150,11 @@ class biwi_data(Dataset):
             else:
                 raise ValueError("Sampling not recognized.")
 
-        
+
         inp, action = self._get_verts_data(data_index, frame_ix)
+        au, au_raw = self._get_au_data(data_index, frame_ix)
 
-
-        output = {'inp': inp, 'action': action}
+        output = {'inp': inp, 'action': action, 'au': au, 'au_raw': au_raw}
 
         if hasattr(self, '_actions') and hasattr(self, '_action_classes'):
             output['action_text'] = self.action_to_action_name(self.get_action(data_index))
@@ -138,12 +164,15 @@ class biwi_data(Dataset):
     def _get_verts_data(self, data_index, frame_ix):
         pose = self._pose[data_index][frame_ix].transpose(1, 2, 0)
         label = self._actions[data_index]
-        
         return torch.from_numpy(pose), label
-    
-    # def _load(self, ind, frame_ix):
-    #     return super()._load(ind, frame_ix)
 
-actions = {
-    0: "no_action"
-}
+    def _get_au_data(self, data_index, frame_ix):
+        au_full = self._au[data_index]
+        fps2sr = 640 # 16000 / 25
+        frame_sr = np.arange(frame_ix.min() * fps2sr, (frame_ix.max() + 1) * fps2sr)
+        repeated_frames =  ((frame_ix == frame_ix.max()).astype(int).sum() - 1) * fps2sr
+        frame_sr = np.concatenate((frame_sr, [max(frame_sr)] * repeated_frames)).astype(int)
+        au_clip = torch.from_numpy(au_full[frame_sr]) # The raw wav data
+        au_processed = self.processor(au_clip, sampling_rate=16000).input_values # Data processed for wav2vec2
+        return torch.from_numpy(au_processed[0]), au_clip
+        

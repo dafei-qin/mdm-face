@@ -1,6 +1,6 @@
 from torch.utils.data import DataLoader
 from data_loaders.tensors import collate as all_collate
-from data_loaders.tensors import t2m_collate
+from data_loaders.tensors import t2m_collate, verts_collate, facs_collate
 
 def get_dataset_class(name):
     if name == "amass":
@@ -21,6 +21,9 @@ def get_dataset_class(name):
     elif name == 'biwi':
         from data_loaders.biwi.data.dataset import biwi_data
         return biwi_data
+    elif name == 'facs':
+        from data_loaders.facs.dataset import facs_data
+        return facs_data
     else:
         raise ValueError(f'Unsupported dataset name [{name}]')
 
@@ -30,6 +33,10 @@ def get_collate_fn(name, hml_mode='train'):
         return t2m_eval_collate
     if name in ["humanml", "kit"]:
         return t2m_collate
+    elif name == 'biwi':
+        return verts_collate
+    elif name == 'facs':
+        return verts_collate
     else:
         return all_collate
 
@@ -43,13 +50,13 @@ def get_dataset(name, num_frames, split='train', hml_mode='train'):
     return dataset
 
 
-def get_dataset_loader(name, batch_size, num_frames, split='train', hml_mode='train'):
+def get_dataset_loader(name, batch_size, num_frames, split='train', hml_mode='train', drop_last=True):
     dataset = get_dataset(name, num_frames, split, hml_mode)
     collate = get_collate_fn(name, hml_mode)
 
     loader = DataLoader(
         dataset, batch_size=batch_size, shuffle=True,
-        num_workers=8, drop_last=True, collate_fn=collate
+        num_workers=0, drop_last=drop_last, collate_fn=collate
     )
 
     return loader

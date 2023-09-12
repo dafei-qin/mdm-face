@@ -1,0 +1,6 @@
+/raid/HKU_TK_GROUP/qindafei/motion-diffusion-model/dataset/biwi/audio_cut/F1_e01_cut.wav
+/raid/HKU_TK_GROUP/qindafei/motion-diffusion-model/dataset/biwi/audio_cut/F2_e02_cut.wav
+/raid/HKU_TK_GROUP/qindafei/motion-diffusion-model/dataset/biwi/audio_cut/M1_e37_cut.wav
+/raid/HKU_TK_GROUP/qindafei/motion-diffusion-model/dataset/biwi/audio_cut/M2_e39_cut.wav
+/raid/HKU_TK_GROUP/qindafei/motion-diffusion-model/dataset/biwi/audio_cut/M3_e40_cut.wav
+

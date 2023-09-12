@@ -17,8 +17,12 @@ from diffusion.resample import create_named_schedule_sampler
 from data_loaders.humanml.networks.evaluator_wrapper import EvaluatorMDMWrapper
 from eval import eval_humanml, eval_humanact12_uestc
 from data_loaders.get_data import get_dataset_loader
-
-
+from data_loaders.tensors import verts_collate, facs_collate
+from torch.utils.data.dataloader import DataLoader
+from time import time
+from collections import defaultdict
+from data_loaders.biwi.render import init_renderer, render_sequence
+import trimesh
 # For ImageNet experiments, this was a good default value.
 # We found that the lg_loss_scale quickly climbed to
 # 20-21 within the first ~1K steps of training.
@@ -44,7 +48,7 @@ class TrainLoop:
         self.fp16_scale_growth = 1e-3  # deprecating this option
         self.weight_decay = args.weight_decay
         self.lr_anneal_steps = args.lr_anneal_steps
-
+        self.mask = ''
         self.step = 0
         self.resume_step = 0
         self.global_batch = self.batch_size # * dist.get_world_size()
@@ -98,6 +102,18 @@ class TrainLoop:
             }
         self.use_ddp = False
         self.ddp_model = self.model
+        
+        if self.args.dataset in ['biwi', 'facs'] and self.args.eval_during_training:
+            self.eval_data = {'eval': get_dataset_loader(name=args.dataset, batch_size=args.batch_size, num_frames=args.num_frames, split='val', drop_last=False)}
+            if self.args.dataset == 'biwi':
+                mesh = trimesh.load('./biwi_ssp_8000_deformed.obj', process=False)
+            else:
+                pass
+            if args.render:
+                self.ps_mesh = init_renderer(mesh)
+
+
+                        
 
     def _load_and_sync_parameters(self):
         resume_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
@@ -124,8 +140,18 @@ class TrainLoop:
             self.opt.load_state_dict(state_dict)
 
     def run_loop(self, writer):
+        misc = {'writer': writer}
+        t_epoch = time()
         for epoch in range(self.num_epochs):
+            __t = time()
+            misc['elasped_time'] = defaultdict(list)
+            misc['epoch'] = epoch
             for batch_index, (motion, cond) in enumerate(self.data): # motion: (BS, joints, feat_dim, frames), 
+                # motion = motion.squeeze(-1)
+                misc['batch_index'] = batch_index
+                _t = time() - __t
+                misc['elasped_time']['data_loading'].append(_t)
+
                 # cond['y']:
                 # mask: (BS, 1, 1, frames) per frame weight?
                 # lengths: [frames] * BS
@@ -136,8 +162,7 @@ class TrainLoop:
 
                 motion = motion.to(self.device)
                 cond['y'] = {key: val.to(self.device) if torch.is_tensor(val) else val for key, val in cond['y'].items()}
-
-                self.run_step(writer, epoch, batch_index, motion, cond)
+                self.run_step(misc, motion, cond)
                 if self.step % self.log_interval == 0:
                     for k,v in logger.get_current().name2val.items():
                         if k == 'loss':
@@ -158,17 +183,27 @@ class TrainLoop:
                     if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
                         return
                 self.step += 1
+
+                for key in misc['elasped_time']:
+                    misc['writer'].add_scalar(f'time/{key}', np.array(misc['elasped_time'][key]).mean(), epoch * len(self.data) + batch_index)
+                    # print(f'time/{key}', np.array(misc['elasped_time'][key]).mean(), 'iteration', epoch * len(self.data) + batch_index)
+                __t = time()
             if not (not self.lr_anneal_steps or self.step + self.resume_step < self.lr_anneal_steps):
                 break
+            misc['writer'].add_scalar(f'time/epoch', np.array(time() - t_epoch), epoch * len(self.data))
+            t_epoch = time()
         # Save the last checkpoint if it wasn't already saved.
         if (self.step - 1) % self.save_interval != 0:
             self.save()
             self.evaluate()
+            
 
     def evaluate(self):
+        #[TODO] update evaluation on face dataset
         if not self.args.eval_during_training:
             return
-        start_eval = time.time()
+        print('Evaluating...')
+        start_eval = time()
         if self.eval_wrapper is not None:
             print('Running evaluation loop: [Should take about 90 min]')
             log_file = os.path.join(self.save_dir, f'eval_humanml_{(self.step + self.resume_step):09d}.log')
@@ -200,28 +235,63 @@ class TrainLoop:
                     self.train_platform.report_scalar(name=k, value=np.array(v).astype(float).mean(), iteration=self.step, group_name='Eval')
                 else:
                     self.train_platform.report_scalar(name=k, value=np.array(v).astype(float).mean(), iteration=self.step, group_name='Eval Unconstrained')
+        elif self.dataset == 'biwi':
+            
+            with torch.no_grad():
+                sample_fn = self.diffusion.p_sample_loop
+                all_motions = []
+                for batch_index, (motion, cond) in enumerate(self.eval_data['eval']): # Here we iterate through the eval set
+                    motion = motion.squeeze()
+                    motion = motion.to(self.device)
+                    cond['y'] = {key: val.to(self.device) if torch.is_tensor(val) else val for key, val in cond['y'].items()}
+                    
+                    sample = sample_fn(
+                        self.model, 
+                        (min(self.args.batch_size, motion.shape[0]), self.model.njoints, self.model.nfeats, self.args.num_frames), 
+                        clip_denoised=False, model_kwargs=cond, skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
+                        init_image=None,
+                        progress=False,
+                        dump_steps=None,
+                        noise=None,
+                        const_noise=False)
+                    mse_diff = (sample - motion).pow(2).mean(dim=(1, 2, 3))
+                    print(f'Eval on {self.step:010d}', f': MSE diff: {mse_diff.mean()}')
 
-        end_eval = time.time()
+                    if self.args.render:
+                        if self.step == 0:
+                            os.makedirs(os.path.join(self.args.save_dir, f'gt'))
+                            for idx, seq in enumerate(motion.cpu().numpy()):
+                                render_sequence(self.ps_mesh, seq.transpose(2, 0, 1), os.path.join(self.args.save_dir, 'gt', f'{idx:03d}.mp4'), audio=cond['y']['au_raw'][idx].cpu().numpy())
+                        for idx, seq in enumerate(sample.cpu().numpy()):
+                            render_sequence(self.ps_mesh, seq.transpose(2, 0, 1), os.path.join(self.args.save_dir, f'{self.step:010d}', f'{idx:03d}.mp4'), audio=cond['y']['au_raw'][idx].cpu().numpy())
+                    
+        end_eval = time()
         print(f'Evaluation time: {round(end_eval-start_eval)/60}min')
 
 
-    def run_step(self, writer, epoch, batch_index, batch, cond):
-        self.forward_backward(writer, epoch, batch_index, batch, cond)
+        
+    def run_step(self, misc, batch, cond):
+        self.forward_backward(misc, batch, cond)
+        __t = time()
         self.mp_trainer.optimize(self.opt)
+        _t = time() - __t
+        misc['elasped_time']['optimize'].append(_t)
         self._anneal_lr()
         self.log_step()
 
-    def forward_backward(self, writer, epoch, batch_index, batch, cond):
+    def forward_backward(self, misc, batch, cond):
+
         self.mp_trainer.zero_grad()
         for i in range(0, batch.shape[0], self.microbatch):
             # Eliminates the microbatch feature
+            __t = time()
             assert i == 0
             assert self.microbatch == self.batch_size
             micro = batch
             micro_cond = cond
             last_batch = (i + self.microbatch) >= batch.shape[0]
             t, weights = self.schedule_sampler.sample(micro.shape[0], dist_util.dev())
-
+            
             compute_losses = functools.partial(
                 self.diffusion.training_losses,
                 self.ddp_model,
@@ -247,11 +317,13 @@ class TrainLoop:
             log_loss_dict(
                 self.diffusion, t, {k: v * weights for k, v in losses.items()}
             )
-            
+            misc['elasped_time']['forward'].append(time() - __t)
+            __t = time()
             self.mp_trainer.backward(loss)
+            misc['elasped_time']['backward'].append(time() - __t)
             for key in losses.keys():
-                writer.add_scalar(key, losses[key].mean(), epoch *len(self.data) + batch_index)
-            writer.add_scalar('lr', self.lr, epoch *len(self.data) + batch_index)
+                misc['writer'].add_scalar(key, losses[key].mean(), misc['epoch'] *len(self.data) + misc['batch_index'])
+            misc['writer'].add_scalar('lr', self.lr, misc['epoch'] *len(self.data) + misc['batch_index'])
 
     def _anneal_lr(self):
         if not self.lr_anneal_steps:

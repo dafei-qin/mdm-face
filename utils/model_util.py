@@ -2,8 +2,8 @@ from model.mdm import MDM
 from diffusion import gaussian_diffusion as gd
 from diffusion.respace import SpacedDiffusion, space_timesteps
 from utils.parser_util import get_cond_mode
-
-
+import numpy as np
+import torch
 def load_model_wo_clip(model, state_dict):
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     assert len(unexpected_keys) == 0
@@ -44,13 +44,17 @@ def get_model_args(args, data):
         data_rep = 'face_verts'
         njoints = 4222
         nfeats = 3
+    elif args.dataset == 'facs':
+        data_rep = 'facs'
+        njoints = 52 + 16
+        nfeats = 1
         
     return {'modeltype': '', 'njoints': njoints, 'nfeats': nfeats, 'num_actions': num_actions,
             'translation': True, 'pose_rep': 'rot6d', 'glob': True, 'glob_rot': True,
             'latent_dim': args.latent_dim, 'ff_size': 1024, 'num_layers': args.layers, 'num_heads': 4,
             'dropout': 0.1, 'activation': "gelu", 'data_rep': data_rep, 'cond_mode': cond_mode,
             'cond_mask_prob': args.cond_mask_prob, 'action_emb': action_emb, 'arch': args.arch,
-            'emb_trans_dec': args.emb_trans_dec, 'clip_version': clip_version, 'dataset': args.dataset}
+            'emb_trans_dec': args.emb_trans_dec, 'clip_version': clip_version, 'dataset': args.dataset, 'num_frames': args.num_frames}
 
 
 def create_gaussian_diffusion(args):
@@ -67,6 +71,10 @@ def create_gaussian_diffusion(args):
 
     if not timestep_respacing:
         timestep_respacing = [steps]
+
+    if len(args.masks) != 0:
+        lambda_masks = [float(l) for l in args.lambda_masks]
+        masks = [torch.from_numpy(np.load(mask)).unsqueeze(-1).unsqueeze(0).unsqueeze(-1) for mask in args.masks]
 
     return SpacedDiffusion(
         use_timesteps=space_timesteps(steps, timestep_respacing),
@@ -88,4 +96,6 @@ def create_gaussian_diffusion(args):
         lambda_vel=args.lambda_vel,
         lambda_rcxyz=args.lambda_rcxyz,
         lambda_fc=args.lambda_fc,
+        lambda_masks=lambda_masks,
+        masks=masks,
     )

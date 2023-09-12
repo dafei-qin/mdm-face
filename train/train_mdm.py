@@ -11,11 +11,18 @@ from utils import dist_util
 from train.training_loop import TrainLoop
 from data_loaders.get_data import get_dataset_loader
 from utils.model_util import create_model_and_diffusion
+import torch
 from train.train_platforms import ClearmlPlatform, TensorboardPlatform, NoPlatform  # required for the eval operation
 from clearml import Task
 from torch.utils.tensorboard import SummaryWriter
+
 def main():
+    os.environ['OMP_NUM_THREADS'] = '8'
+    torch.set_num_threads(8)
     args = train_args()
+    if args.task_name == '':
+        args.task_name = os.path.basename(args.save_dir)
+    print('Task name: ', args.task_name)
     fixseed(args.seed)
     train_platform_type = eval(args.train_platform_type)
     train_platform = train_platform_type(args.save_dir)
@@ -40,7 +47,8 @@ def main():
     print("creating model and diffusion...")
     model, diffusion = create_model_and_diffusion(args, data)
     model.to(dist_util.dev())
-    model.rot2xyz.smpl_model.eval()
+    if args.dataset not in ['biwi', 'facs']:
+        model.rot2xyz.smpl_model.eval()
 
     print('Total params: %.2fM' % (sum(p.numel() for p in model.parameters_wo_clip()) / 1000000.0))
     print("Training...")
