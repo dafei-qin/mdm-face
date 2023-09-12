@@ -73,8 +73,12 @@ def create_gaussian_diffusion(args):
         timestep_respacing = [steps]
 
     if len(args.masks) != 0:
+        print(f'Using {len(args.masks)} mask(s)')
         lambda_masks = [float(l) for l in args.lambda_masks]
         masks = [torch.from_numpy(np.load(mask)).unsqueeze(-1).unsqueeze(0).unsqueeze(-1) for mask in args.masks]
+    else:
+        lambda_masks = []
+        masks = []
 
     return SpacedDiffusion(
         use_timesteps=space_timesteps(steps, timestep_respacing),
