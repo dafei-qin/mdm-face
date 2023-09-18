@@ -184,7 +184,7 @@ def main():
 
         rot2xyz_pose_rep = 'xyz' if model.data_rep in ['xyz', 'hml_vec'] else model.data_rep
         rot2xyz_mask = None if rot2xyz_pose_rep == 'xyz' else model_kwargs['y']['mask'].reshape(args.batch_size, n_frames).bool()
-        if rot2xyz_pose_rep != 'face_verts':
+        if rot2xyz_pose_rep not in ['face_verts', 'facs']:
             sample = model.rot2xyz(x=sample, mask=rot2xyz_mask, pose_rep=rot2xyz_pose_rep, glob=True, translation=True,
                                 jointstype='smpl', vertstrans=True, betas=None, beta=0, glob_rot=None,
                                 get_rotations_back=False)
@@ -236,18 +236,16 @@ def main():
 
     print(f"saving visualizations to [{out_path}]...")
     if model.data_rep == 'face_verts':
-        from data_loaders.biwi.data.utils_pc2 import writePC2
+        from data_loaders.biwi.render import save
         if args.audio_file != '':
-            # all_audios = np.concatenate(all_audios, axis=0)
             all_motions = all_audios
-        for idx, motion in enumerate(all_motions):
-
-            writePC2(npy_path.replace('.npy', f"_rep_{idx // len(write_names)}_{write_names[idx % len(write_names)]}.pc2"), motion.transpose(2, 0, 1), float16=False)
-
-
-            if args.audio_file != '':
-                sf.write(npy_path.replace('.npy', f"_rep_{idx // len(write_names)}_{write_names[idx % len(write_names)]}.wav"), wavs[idx % len(write_names)], 16000)
+            save(all_motions, write_names, npy_path, wavs)
+        else:
+            save(all_motions, write_names, npy_path)
         print(f'PC2 results at at [{os.path.abspath(os.path.dirname(npy_path))}]')
+    elif model.data_rep == 'facs':
+        from data_loaders.facs.render import save
+        save(data.dataset, all_motions, npy_path)
     else:
         skeleton = paramUtil.kit_kinematic_chain if args.dataset == 'kit' else paramUtil.t2m_kinematic_chain
 

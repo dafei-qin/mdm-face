@@ -72,7 +72,7 @@ def create_gaussian_diffusion(args):
     if not timestep_respacing:
         timestep_respacing = [steps]
 
-    if len(args.masks) != 0:
+    if hasattr(args, 'masks') and len(args.masks) != 0:
         print(f'Using {len(args.masks)} mask(s)')
         lambda_masks = [float(l) for l in args.lambda_masks]
         masks = [torch.from_numpy(np.load(mask)).unsqueeze(-1).unsqueeze(0).unsqueeze(-1) for mask in args.masks]

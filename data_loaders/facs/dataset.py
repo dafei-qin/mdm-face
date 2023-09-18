@@ -32,41 +32,7 @@ class facs_data(Dataset):
         self._trans_std = trans_std
         print(f'Loaded facs (CelebV-HQ) dataset, total num of sequences: [train]: {len(self._train)}, [val]: {len(self._val)}, [test]: {len(self._test)}')
 
-        # files_train = glob(os.path.join(datapath, 'train/*.pkl'))
-        # files_val = glob(os.path.join(datapath, 'val/*.pkl'))
-        # files_test = glob(os.path.join(datapath, 'test/*.pkl'))
-
-        # _train = {'pose':[], 'ldmks':[], 'name':[], 'trans':[]}
-        # _val =   {'pose':[], 'ldmks':[], 'name':[], 'trans':[]}
-        # _test =  {'pose':[], 'ldmks':[], 'name':[], 'trans':[]}
-
-
-        # def load_file(filename, out):
-        #     data = pkl.load(open(filename, 'rb'))
-        #     out['pose'].append(data['blendshapes'])
-        #     out['ldmks'].append(data['landmarks'])
-        #     out['name'].append(filename.split('/')[-1].split('.')[0])
-        #     out['trans'].append(data['transformation'])
-        #     return out
-
-        # print('Loading FACS data...')
-        # for out, files in zip([_train, _val, _test], [files_train, files_val, files_test]):
-        #    for f in tqdm(files):
-        #        load_file(f, out)
-        
-        
-        # self._pose = _train['pose'] + _val['pose'] + _test['pose']
-        # self._ldmks = _train['ldmks'] + _val['ldmks'] + _test['ldmks']
-        # self._name = _train['name'] + _val['name'] + _test['name']
-        # self._trans = _train['trans'] + _val['trans'] + _test['trans']
-        # self._train = np.arange(len(_train['pose']))
-        # self._val = np.arange(len(_train['pose']), len(_train['pose']) + len(_val['pose']))
-        # self._test = np.arange(len(_train['pose']) + len(_val['pose']), len(_train['pose']) + len(_val['pose']) + len(_test['pose']))
         self._num_frames_in_video = [len(p) for p in self._pose]
-        # total_num_actions = 1
-        # self.num_actions = total_num_actions
-        # print(f'Loaded facs (CelebV-HQ) dataset, total num of sequences: [train]: {len(self._train)}, [val]: {len(self._val)}, [test]: {len(self._test)}')
-
 
 
         
@@ -146,9 +112,9 @@ class facs_data(Dataset):
                 raise ValueError("Sampling not recognized.")
 
 
-        inp = self._get_data(data_index, frame_ix)
+        inp, var = self._get_data(data_index, frame_ix)
 
-        output = {'inp': inp}
+        output = {'inp': inp, 'var': var}
 
         if hasattr(self, '_actions') and hasattr(self, '_action_classes'):
             output['action_text'] = self.action_to_action_name(self.get_action(data_index))
@@ -159,4 +125,12 @@ class facs_data(Dataset):
         pose = self._pose[data_index][frame_ix]
         trans = self._trans[data_index][frame_ix].reshape(-1, 16)
         pose = np.concatenate((pose, trans), axis=-1)
-        return torch.from_numpy(pose).transpose(0, 1).unsqueeze(1)
+        var = pose.std(axis=0).mean()
+        return torch.from_numpy(pose).transpose(0, 1).unsqueeze(1), torch.tensor([var]).unsqueeze(0)
+    
+    def de_normalize(self, facs, trans):
+        facs = facs * self._facs_std + self._facs_mean
+        if trans is None:
+            return facs, None
+        trans = trans * self._trans_std + self._trans_mean
+        return facs, trans

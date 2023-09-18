@@ -32,6 +32,15 @@ def render_sequence(ps_mesh, newPoss, filename, audio=None):
     else:
         subprocess.call(['ffmpeg', '-y', '-loglevel', 'quiet',  '-i', f'{tmp_dir}/%04d.jpg', filename])
 
+def save(all_motions, write_names, path, wavs=None):
+    from data_loaders.facs.utils_pc2 import writePC2
+    for idx, motion in enumerate(all_motions):
+
+        writePC2(path.replace('.npy', f"_rep_{idx // len(write_names)}_{write_names[idx % len(write_names)]}.pc2"), motion.transpose(2, 0, 1), float16=False)
+
+
+        if wavs is not None:
+            sf.write(path.replace('.npy', f"_rep_{idx // len(write_names)}_{write_names[idx % len(write_names)]}.wav"), wavs[idx % len(write_names)], 16000)
 
 if __name__ == '__main__':
     ps.set_screenshot_extension(".jpg")

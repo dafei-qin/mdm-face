@@ -94,7 +94,7 @@ def add_model_options(parser):
                        help="Model is trained unconditionally. That is, it is constrained by neither text nor action. "
                             "Currently tested on HumanAct12 only.")
     group.add_argument("--cond_audio", action='store_true', help='Condition the model on audio inputs. Currently work on BIWI only')
-
+    group.add_argument("--cond_var", action='store_true', help='Condition the model on the variance of the input FACS. Currently work on FACS only')
     group.add_argument("--num_frames", default=60, type=int,
                        help="Limit for the maximal number of frames. In HumanML3D and KIT this field is ignored.")
 
@@ -224,7 +224,11 @@ def get_cond_mode(args):
             print('Error, audio condition only supports BIWI dataset')
             raise NotImplementedError
         cond_mode = [cond_mode, 'audio']
-
+    if args.cond_var:
+        if args.dataset != 'facs':
+            print('Error, variance condition only supports FACS dataset')
+            raise NotImplementedError
+        cond_mode = ['var']
     return cond_mode
 
 

@@ -104,7 +104,10 @@ class MDM(nn.Module):
                     self.audio_feature_map = nn.Linear(768 * self.n_frames, self.latent_dim)
                 # self.audio_feature_map = nn.Linear(768 * self.n_frames, self.latent_dim)
                 # self.embd_au = nn.Linear(self.)
+            if 'var' in self.cond_mode:
+                print('EMBED VAR')
 
+                
         self.output_process = OutputProcess(self.data_rep, self.input_feats, self.latent_dim, self.njoints,
                                             self.nfeats)
         if dataset not in ['biwi', 'facs']:
@@ -187,7 +190,10 @@ class MDM(nn.Module):
             # enc_audio = 
 
             emb = emb +  self.mask_cond(enc_audio, force_mask=force_mask)
-
+        
+        if 'var' in self.cond_mode:
+            # var_emb = self.embed_var(y['var'])
+            emb += self.mask_cond(y['var'], force_mask=force_mask).unsqueeze(0)
             
         if self.arch == 'gru':
             x_reshaped = x.reshape(bs, njoints*nfeats, 1, nframes)
@@ -271,6 +277,10 @@ class TimestepEmbedder(nn.Module):
         )
 
     def forward(self, timesteps):
+        # timesteps: (BS)
+        # pe(timesteps): (BS, 1, latent_dim)
+        # time_embed: (BS, 1, latent_dim)
+        # Out: (1, BS, latent_dim)
         return self.time_embed(self.sequence_pos_encoder.pe[timesteps]).permute(1, 0, 2)
 
 

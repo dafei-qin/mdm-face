@@ -88,6 +88,7 @@ def verts_collate(batch):
         aurawbatch = [b['au_raw'] for b in batch]
         cond['y'].update({'au_raw': torch.stack(aurawbatch)})
         
+    # Action label
     if 'action' in batch[0]:
         actionbatch = [b['action'] for b in batch]
         cond['y'].update({'action': torch.as_tensor(actionbatch).unsqueeze(1)})
@@ -96,11 +97,15 @@ def verts_collate(batch):
         ldmks_batch = [b['ldmks'] for b in batch]
         cond['y'].update({'ldmks': torch.stack(ldmks_batch)})
 
+    # Facs translation
     if 'trans' in batch[0]:
         trans_batch = [b['trans'] for b in batch]
         cond['y'].update({'trans': torch.stack(trans_batch)})
 
-
+    if 'var' in batch[0]:
+        var_batch = [b['var'] for b in batch]
+        cond['y'].update({'var': torch.as_tensor(var_batch).unsqueeze(1)})
+    
     # collate action textual names
     if 'action_text' in batch[0]:
         action_text = [b['action_text']for b in batch]
