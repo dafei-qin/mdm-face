@@ -24,18 +24,22 @@ def to_mesh(ict_model, code, trans):
     return out_v_bs, out_v[..., :-1]
 
 
-def save(dataset, all_motions, path):
+def save(dataset, all_motions, path, write_names=[]):
     ict_model = init_ict_model(decimate=2)
     facs = ict_model.faces
 
     facs = [d[:52].squeeze().transpose(1, 0) for d in all_motions]
     trans = [None for d in all_motions]
     for _idx, (f, t) in enumerate(zip(facs, trans)):
+        if len(write_names) == 0:
+            write_name = f"{_idx:02d}"
+        else:
+            write_name = write_names[_idx]
         f, t = dataset.de_normalize(f, t)
         vert_seq_bs,  vert_seq= to_mesh(ict_model, f, t)
-        writePC2(path.replace('.npy', f"{_idx:02d}_bs.pc2"), vert_seq_bs, float16=False)
+        writePC2(path.replace('.npy', f"{write_name}_bs.pc2"), vert_seq_bs, float16=False)
         if t is not None:
-            writePC2(path.replace('.npy', f"{_idx:02d}.pc2"), vert_seq, float16=False)
+            writePC2(path.replace('.npy', f"{write_name}.pc2"), vert_seq, float16=False)
 
 
 if __name__ == '__main__':

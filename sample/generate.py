@@ -147,6 +147,8 @@ def main():
                 collate_args = [dict(collate_args[idx], au=torch.from_numpy(processor(wav_trim, sampling_rate=16000).input_values[0]).to(dist_util.dev())) for (wav_trim, idx) in wavs_trims]
                 return collate_args
             collate_args = trim_audios(processor, collate_args, wavs, max_frames * fps2ar)
+
+
         args.num_samples = len(collate_args)
         args.batch_size = args.num_samples
 
@@ -158,6 +160,9 @@ def main():
                 dataset = facs_data(datapath=args.data_dir, split='test', num_frames=args.num_frames, inpainting=True)
             collate_args = [dataset[i] for i in files]
 
+        if args.cond_var:
+            write_names = [d['action_text'] for d in collate_args]
+            write_names = [f'std={w}_rep={r:02d}' for r in range(args.num_repetitions) for w in write_names]
         if args.dataset in ['biwi', 'facs']:
             _, model_kwargs = verts_collate(collate_args)
 
@@ -270,7 +275,7 @@ def main():
         print(f'PC2 results at at [{os.path.abspath(os.path.dirname(npy_path))}]')
     elif model.data_rep == 'facs':
         from data_loaders.facs.render import save
-        save(data.dataset, all_motions, npy_path)
+        save(data.dataset, all_motions, npy_path, write_names)
     else:
         skeleton = paramUtil.kit_kinematic_chain if args.dataset == 'kit' else paramUtil.t2m_kinematic_chain
 
