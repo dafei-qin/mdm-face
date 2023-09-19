@@ -193,7 +193,7 @@ class MDM(nn.Module):
         
         if 'var' in self.cond_mode:
             # var_emb = self.embed_var(y['var'])
-            emb += self.mask_cond(y['var'], force_mask=force_mask).unsqueeze(0)
+            emb += self.mask_cond(y['var'].to(emb.device), force_mask=force_mask).unsqueeze(0)
             
         if self.arch == 'gru':
             x_reshaped = x.reshape(bs, njoints*nfeats, 1, nframes)

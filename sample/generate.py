@@ -212,6 +212,10 @@ def main():
         else:
             sample = sample
 
+
+        if args.inpainting:
+            sample[..., 0] = init_image[..., 0]
+            sample[..., -1] = init_image[..., -1]
         if args.unconstrained:
             all_text += ['unconstrained'] * args.num_samples
         else:
@@ -346,7 +350,7 @@ def load_dataset(args, max_frames, n_frames):
                               batch_size=args.batch_size,
                               num_frames=max_frames,
                               split='test',
-                              hml_mode='text_only')
+                              hml_mode='text_only', data_dir=args.data_dir)
     if args.dataset in ['kit', 'humanml']:
         data.dataset.t2m_dataset.fixed_length = n_frames
     return data

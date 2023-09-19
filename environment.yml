@@ -1,4 +1,4 @@
-name: mdm
+name: dafei-mdm
 channels:
   - pytorch
   - anaconda

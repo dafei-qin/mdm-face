@@ -120,8 +120,8 @@ class facs_data(Dataset):
 
 
         inp, var = self._get_data(data_index, frame_ix)
-
-        output = {'inp': inp, 'var': var}
+        action_text = f'{var.item():.2f}'
+        output = {'inp': inp, 'var': var, 'action_text': action_text}
 
         if hasattr(self, '_actions') and hasattr(self, '_action_classes'):
             output['action_text'] = self.action_to_action_name(self.get_action(data_index))
