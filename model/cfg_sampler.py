@@ -14,7 +14,8 @@ class ClassifierFreeSampleModel(nn.Module):
         assert self.model.cond_mask_prob > 0, 'Cannot run a guided diffusion on a model that has not been trained with no conditions'
 
         # pointers to inner model
-        self.rot2xyz = self.model.rot2xyz
+        if self.model.dataset in ['humanml', 'kit', 'humanact12', 'uestc']:
+            self.rot2xyz = self.model.rot2xyz
         self.translation = self.model.translation
         self.njoints = self.model.njoints
         self.nfeats = self.model.nfeats
@@ -24,7 +25,7 @@ class ClassifierFreeSampleModel(nn.Module):
     def forward(self, x, timesteps, y=None):
         cond_mode = self.model.cond_mode
         # assert cond_mode in ['text', 'action']
-        assert 'action' in cond_mode or 'text' in cond_mode
+        assert 'action' in cond_mode or 'text' in cond_mode or 'var' in cond_mode
         y_uncond = deepcopy(y)
         y_uncond['uncond'] = True
         out = self.model(x, timesteps, y)
