@@ -11,7 +11,7 @@ import pickle
 class facs_data(Dataset):
     dataname = "facs"
 
-    def __init__(self, datapath="/raid/HKU_TK_GROUP/qindafei/pkl/normalized", **kargs):
+    def __init__(self, datapath="/raid/HKU_TK_GROUP/qindafei/pkl/normalized", inpainting=False, **kargs):
         self.datapath = datapath
 
         super().__init__(**kargs)
@@ -33,6 +33,7 @@ class facs_data(Dataset):
         print(f'Loaded facs (CelebV-HQ) dataset, total num of sequences: [train]: {len(self._train)}, [val]: {len(self._val)}, [test]: {len(self._test)}')
 
         self._num_frames_in_video = [len(p) for p in self._pose]
+        self.inpainting = inpainting
 
 
         
@@ -49,7 +50,13 @@ class facs_data(Dataset):
         else:
             data_index = self._val[index]
             
-        return self._get_item_data_index(data_index)
+        output = self._get_item_data_index(data_index)
+        if not self.inpainting:
+            return output
+        else:
+            output['inp'][..., 1:-1] = 0
+            return output
+
 
     def _get_item_data_index(self, data_index):
         

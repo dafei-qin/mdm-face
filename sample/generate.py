@@ -17,6 +17,7 @@ import data_loaders.humanml.utils.paramUtil as paramUtil
 from data_loaders.humanml.utils.plot_script import plot_3d_motion
 import shutil
 from data_loaders.tensors import collate, verts_collate
+from data_loaders.facs.dataset import facs_data
 import soundfile as sf
 from copy import deepcopy
 def main():
@@ -31,7 +32,7 @@ def main():
     if args.dataset == 'biwi':
         fps = 25
     n_frames = min(max_frames, int(args.motion_length*fps))
-    is_using_data = not any([args.input_text, args.text_prompt, args.action_file, args.action_name, args.audio_file])
+    is_using_data = not any([args.input_text, args.text_prompt, args.action_file, args.action_name, args.audio_file, args.inpainting])
     dist_util.setup_dist(args.device)
     if out_path == '':
         out_path = os.path.join(os.path.dirname(args.model_path),
@@ -60,6 +61,14 @@ def main():
             action_text = fr.readlines()
         action_text = [s.replace('\n', '') for s in action_text]
         args.num_samples = len(action_text)
+    elif args.inpainting_file != '':
+        assert args.inpainting_file != ''
+        assert os.path.exists(args.inpainting_file)
+        files = open(args.inpainting_file, 'r').readlines()
+        files = [s.replace('\n', '') for s in files]
+        files = [s for s in files if s != '']
+        files = [int(f) for f in files]
+        args.num_samples = len(files)
     else:
         args.num_samples = 1
 
@@ -141,8 +150,15 @@ def main():
         args.num_samples = len(collate_args)
         args.batch_size = args.num_samples
 
+        if args.inpainting:
+            
+            if args.data_dir == '':
+                dataset = facs_data(split='test', num_frames=args.num_frames, inpainting=True)
+            else:
+                dataset = facs_data(datapath=args.data_dir, split='test', num_frames=args.num_frames, inpainting=True)
+            collate_args = [dataset[i] for i in files]
 
-        if args.dataset == 'biwi':
+        if args.dataset in ['biwi', 'facs']:
             _, model_kwargs = verts_collate(collate_args)
 
         else:
@@ -161,6 +177,11 @@ def main():
 
         sample_fn = diffusion.p_sample_loop
 
+        # Here add the beginning and the ending frames to do inpainting
+        init_image = None
+        if args.inpainting:
+            init_image = _
+            init_image = init_image.to(dist_util.dev())
         sample = sample_fn(
             model,
             # (args.batch_size, model.njoints, model.nfeats, n_frames),  # BUG FIX - this one caused a mismatch between training and inference
@@ -168,7 +189,7 @@ def main():
             clip_denoised=False,
             model_kwargs=model_kwargs,
             skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
-            init_image=None,
+            init_image=init_image,
             progress=True,
             dump_steps=None,
             noise=None,

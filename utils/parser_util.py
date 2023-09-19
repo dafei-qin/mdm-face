@@ -162,7 +162,6 @@ def add_sampling_options(parser):
     group.add_argument("--guidance_param", default=2.5, type=float,
                        help="For classifier-free sampling - specifies the s parameter, as defined in the paper.")
 
-
 def add_generate_options(parser):
     group = parser.add_argument_group('generate')
     group.add_argument("--motion_length", default=6.0, type=float,
@@ -180,6 +179,8 @@ def add_generate_options(parser):
                        help="A text prompt to be generated. If empty, will take text prompts from dataset.")
     group.add_argument("--action_name", default='', type=str,
                        help="An action name to be generated. If empty, will take text prompts from dataset.")
+    group.add_argument("--inpainting", default=False, action='store_true', help='if set, will perform inpainting by using the  inpainting sequences instead of unconditional sampling')
+    group.add_argument("--inpainting_file", default='', type=str, help='Path to a text file that lists names of sequences to be used for inpainting, the first and the last frame of the sequence will be used as the keyframes frames')
 
 
 def add_edit_options(parser):
