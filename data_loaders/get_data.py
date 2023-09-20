@@ -47,7 +47,7 @@ def get_dataset(name, num_frames, split='train', hml_mode='train', data_dir=''):
         dataset = DATA(split=split, num_frames=num_frames, mode=hml_mode)
     else:
         if data_dir == '':
-            ataset = DATA(split=split, num_frames=num_frames)
+            dataset = DATA(split=split, num_frames=num_frames)
         else:
             dataset = DATA(split=split, num_frames=num_frames, datapath=data_dir)
     return dataset
