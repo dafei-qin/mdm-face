@@ -19,8 +19,8 @@ class facs_data(Dataset):
         self._pose = {}
         self._num_frames_in_video = {}
         self._actions = {}
-        facs, facs_mean, facs_std = pickle.load(open(os.path.join(datapath, 'facs.pkl'), 'rb')).values()
-        trans, trans_mean, trans_std = pickle.load(open(os.path.join(datapath, 'trans.pkl'), 'rb')).values()
+        facs, facs_mean, facs_std = pickle.load(open(os.path.join(datapath, 'normalized_short_facs.pkl'), 'rb')).values()
+        trans, trans_mean, trans_std = pickle.load(open(os.path.join(datapath, 'normalized_short_trans.pkl'), 'rb')).values()
         self._pose = [f.astype(np.float32) for f in facs]
         self._trans = [f.astype(np.float32) for f in trans]
         self._train = np.arange(len(self._pose) - 1000)
@@ -135,7 +135,7 @@ class facs_data(Dataset):
     
     def _get_data(self, data_index, frame_ix):
         pose = self._pose[data_index][frame_ix]
-        trans = self._trans[data_index][frame_ix].reshape(-1, 16)
+        trans = self._trans[data_index][frame_ix].reshape(-1, 9)
         pose = np.concatenate((pose, trans), axis=-1)
         var = pose.std(axis=0).mean()
         return torch.from_numpy(pose).transpose(0, 1).unsqueeze(1), torch.tensor([var]).unsqueeze(0)
