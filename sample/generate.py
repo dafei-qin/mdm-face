@@ -67,7 +67,7 @@ def main():
         files = open(args.inpainting_file, 'r').readlines()
         files = [s.replace('\n', '') for s in files]
         files = [s for s in files if s != '']
-        files = [int(f) for f in files]
+        files = [(int(s.split('_')[0]), float(s.split('_')[1])) for s in files]
         args.num_samples = len(files)
     else:
         args.num_samples = 1
@@ -155,14 +155,17 @@ def main():
         if args.inpainting:
             
             if args.data_dir == '':
-                dataset = facs_data(split='test', num_frames=args.num_frames, inpainting=True)
+                dataset = facs_data(split='test', num_frames=args.num_frames, inpainting=True, sampling='disabled') # Disable data sampling 
             else:
-                dataset = facs_data(datapath=args.data_dir, split='test', num_frames=args.num_frames, inpainting=True)
-            collate_args = [dataset[i] for i in files]
+                dataset = facs_data(datapath=args.data_dir, split='test', num_frames=args.num_frames, inpainting=True, sampling='disabled')
+            collate_args = [dataset[i[0]] for i in files]
+            for idx, _c in enumerate(collate_args):
+                _c['var'] = files[idx][1]
+                _c['action_text'] = f'{files[idx][1]:.2f}'
 
         if args.cond_var:
-            write_names = [d['action_text'] for d in collate_args]
-            write_names = [f'std={w}_rep={r:02d}' for r in range(args.num_repetitions) for w in write_names]
+            write_names = [f'_idx={f[0]:03d}_std={f[1]:.2f}' for f in files]
+            write_names = [f'{w}_rep={r:02d}' for r in range(args.num_repetitions) for w in write_names]
         if args.dataset in ['biwi', 'facs']:
             _, model_kwargs = verts_collate(collate_args)
 
@@ -187,6 +190,9 @@ def main():
         if args.inpainting:
             init_image = _
             init_image = init_image.to(dist_util.dev())
+            model_kwargs['y']['inpainting_mask'] = model_kwargs['y']['inpainting_mask'].to(dist_util.dev())
+            model_kwargs['y']['inpainted_motion'] = model_kwargs['y']['inpainted_motion'].to(dist_util.dev())
+
         sample = sample_fn(
             model,
             # (args.batch_size, model.njoints, model.nfeats, n_frames),  # BUG FIX - this one caused a mismatch between training and inference

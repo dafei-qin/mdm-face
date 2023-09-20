@@ -727,6 +727,7 @@ class GaussianDiffusion:
                 )
                 yield out
                 img = out["sample"]
+                
 
     def ddim_sample(
         self,

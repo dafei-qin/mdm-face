@@ -52,6 +52,7 @@ def collate(batch):
         action_text = [b['action_text']for b in notnone_batches]
         cond['y'].update({'action_text': action_text})
 
+
     return motion, cond
 
 # an adapter to our collate func
@@ -111,7 +112,12 @@ def verts_collate(batch):
         action_text = [b['action_text']for b in batch]
         cond['y'].update({'action_text': action_text})
 
-
+    # inpainting and masks
+    if 'inpainting_mask' in batch[0]:
+        _batch = [b['inpainting_mask'] for b in batch]
+        cond['y'].update({'inpainting_mask': torch.stack(_batch)})
+        _batch = [b['inpainted_motion'] for b in batch]
+        cond['y'].update({'inpainted_motion': torch.stack(_batch)})
     return motion, cond
 
 def facs_collate(batch):

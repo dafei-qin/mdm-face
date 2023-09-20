@@ -114,7 +114,8 @@ class facs_data(Dataset):
                                            num_frames,
                                            replace=False)
                 frame_ix = sorted(choices)
-
+            elif self.sampling == 'disabled':
+                frame_ix = np.arange(num_frames)
             else:
                 raise ValueError("Sampling not recognized.")
 
@@ -122,7 +123,11 @@ class facs_data(Dataset):
         inp, var = self._get_data(data_index, frame_ix)
         action_text = f'{var.item():.2f}'
         output = {'inp': inp, 'var': var, 'action_text': action_text}
-
+        if self.inpainting:
+            output['inpainted_motion'] = inp
+            output['inpainting_mask'] = torch.zeros_like(inp).bool()
+            output['inpainting_mask'][..., 0] = 1
+            output['inpainting_mask'][..., -1] = 1
         if hasattr(self, '_actions') and hasattr(self, '_action_classes'):
             output['action_text'] = self.action_to_action_name(self.get_action(data_index))
 
