@@ -46,7 +46,7 @@ def get_model_args(args, data):
         nfeats = 3
     elif args.dataset == 'facs':
         data_rep = 'facs'
-        njoints = 52 + 16
+        njoints = 52 + 6 + 3 # BS = 52, rot = 6, trans = 3
         nfeats = 1
         
     return {'modeltype': '', 'njoints': njoints, 'nfeats': nfeats, 'num_actions': num_actions,

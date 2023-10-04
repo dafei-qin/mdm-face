@@ -13,9 +13,9 @@ import numpy as np
 import torch
 import torch as th
 from copy import deepcopy
+
 from diffusion.nn import mean_flat, sum_flat
 from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood
-from data_loaders.humanml.scripts import motion_process
 
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, scale_betas=1.):
     """
@@ -134,6 +134,8 @@ class GaussianDiffusion:
         lambda_root_vel=0.,
         lambda_vel_rcxyz=0.,
         lambda_fc=0.,
+        batch_size=32,
+        multi_train_mode=None,
         lambda_masks=[],
         masks=[],
     ):
@@ -142,6 +144,7 @@ class GaussianDiffusion:
         self.loss_type = loss_type
         self.rescale_timesteps = rescale_timesteps
         self.data_rep = data_rep
+        self.multi_train_mode = multi_train_mode
 
         if data_rep != 'rot_vel' and lambda_pose != 1.:
             raise ValueError('lambda_pose is relevant only when training on velocities!')
@@ -154,12 +157,19 @@ class GaussianDiffusion:
         self.lambda_root_vel = lambda_root_vel
         self.lambda_vel_rcxyz = lambda_vel_rcxyz
         self.lambda_fc = lambda_fc
+
+        if self.lambda_rcxyz > 0. or self.lambda_vel > 0. or self.lambda_root_vel > 0. or \
+                self.lambda_vel_rcxyz > 0. or self.lambda_fc > 0.:
+            assert self.loss_type == LossType.MSE, 'Geometric losses are supported by MSE loss type only!'
+
+
         self.lambda_masks = lambda_masks
         self.masks = masks
         assert len(self.lambda_masks) == len(self.masks), 'lambda_mask and masks must have the same length!'
         if self.lambda_rcxyz > 0. or self.lambda_vel > 0. or self.lambda_root_vel > 0. or \
                 self.lambda_vel_rcxyz > 0. or self.lambda_fc > 0. or len(self.lambda_masks) > 0:
             assert self.loss_type == LossType.MSE, 'Geometric losses are supported by MSE loss type only!'
+
 
         # Use float64 for accuracy.
         betas = np.array(betas, dtype=np.float64)
@@ -202,11 +212,13 @@ class GaussianDiffusion:
 
         self.l2_loss = lambda a, b: (a - b) ** 2  # th.nn.MSELoss(reduction='none')  # must be None for handling mask later on.
 
+
+
     def masked_l2(self, a, b, mask):
         # assuming a.shape == b.shape == bs, J, Jdim, seqlen
         # assuming mask.shape == bs, 1, 1, seqlen
         loss = self.l2_loss(a, b)
-        loss = sum_flat(loss * mask.float().to(loss.device))  # gives \sigma_euclidean over unmasked elements
+        loss = sum_flat(loss * mask.float())  # gives \sigma_euclidean over unmasked elements
         n_entries = a.shape[1] * a.shape[2]
         non_zero_elements = sum_flat(mask) * n_entries
         # print('mask', mask.shape)
@@ -234,7 +246,7 @@ class GaussianDiffusion:
         )
         return mean, variance, log_variance
 
-    def q_sample(self, x_start, t, noise=None):
+    def q_sample(self, x_start, t, noise=None, model_kwargs=None):
         """
         Diffuse the dataset for a given number of diffusion steps.
 
@@ -248,11 +260,20 @@ class GaussianDiffusion:
         if noise is None:
             noise = th.randn_like(x_start)
         assert noise.shape == x_start.shape
-        return (
-            _extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
-            + _extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape)
-            * noise
-        )
+
+        if self.multi_train_mode == 'prefix':
+            bs, feat, _, frames = noise.shape
+            prefix_size = 20 # FIXME - HARDCODED for the pw3d task
+            inpainting_mask = torch.zeros_like(noise)
+            inpainting_mask[..., :prefix_size+1] = 1. #  +1 for 6dof
+            noise *= 1. - inpainting_mask
+            return _extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start + _extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
+        else:
+            return (
+                _extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
+                + _extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape)
+                * noise
+            )
 
     def q_posterior_mean_variance(self, x_start, x_t, t):
         """
@@ -312,10 +333,12 @@ class GaussianDiffusion:
             inpainting_mask, inpainted_motion = model_kwargs['y']['inpainting_mask'], model_kwargs['y']['inpainted_motion']
             assert self.model_mean_type == ModelMeanType.START_X, 'This feature supports only X_start pred for mow!'
             assert model_output.shape == inpainting_mask.shape == inpainted_motion.shape
-            model_output = (model_output * ~inpainting_mask) + (inpainted_motion * inpainting_mask)
-            # print('model_output', model_output.shape, model_output)
-            # print('inpainting_mask', inpainting_mask.shape, inpainting_mask[0,0,0,:])
-            # print('inpainted_motion', inpainted_motion.shape, inpainted_motion)
+            
+            # inpainting_mask supports both boolean and scalar values
+            ones = torch.ones_like(inpainting_mask, dtype=torch.float, device=inpainting_mask.device)
+            inpainting_mask = ones * inpainting_mask
+            model_output = (model_output * (1 - inpainting_mask)) + (inpainted_motion * inpainting_mask)
+
 
         if self.model_var_type in [ModelVarType.LEARNED, ModelVarType.LEARNED_RANGE]:
             assert model_output.shape == (B, C * 2, *x.shape[2:])
@@ -345,6 +368,11 @@ class GaussianDiffusion:
                     self.posterior_log_variance_clipped,
                 ),
             }[self.model_var_type]
+            # print('model_variance', model_variance)
+            # print('model_log_variance',model_log_variance)
+            # print('self.posterior_variance', self.posterior_variance)
+            # print('self.posterior_log_variance_clipped', self.posterior_log_variance_clipped)
+            # print('self.model_var_type', self.model_var_type)
 
 
             model_variance = _extract_into_tensor(model_variance, t, x.shape)
@@ -605,12 +633,17 @@ class GaussianDiffusion:
         model_kwargs=None,
         device=None,
         progress=False,
+        predict_two_person=False,
         skip_timesteps=0,
         init_image=None,
         randomize_class=False,
         cond_fn_with_grad=False,
         dump_steps=None,
         const_noise=False,
+        unfolding_handshake=0,  # 0 means no unfolding
+        repaint_samples=1,  # 1 means no repaint
+        arb_len=False,
+        second_take_only=False
     ):
         """
         Generate samples from the model.
@@ -646,12 +679,33 @@ class GaussianDiffusion:
             model_kwargs=model_kwargs,
             device=device,
             progress=progress,
+            predict_two_person=predict_two_person,
             skip_timesteps=skip_timesteps,
             init_image=init_image,
             randomize_class=randomize_class,
             cond_fn_with_grad=cond_fn_with_grad,
             const_noise=const_noise,
         )):
+
+            # unfolding
+            if ((arb_len) and (unfolding_handshake > 0) and not (second_take_only)):
+                alpha = torch.arange(0, unfolding_handshake, 1, device=sample['sample'].device) / unfolding_handshake
+                for sample_i, len in zip(range(1, sample['sample'].shape[0]), model_kwargs['y']['lengths']):
+                    _suffix = sample['sample'][sample_i - 1, :, :, -unfolding_handshake + len:len]
+                    _prefix = sample['sample'][sample_i, :, :, :unfolding_handshake]
+                    try:
+                        _blend = (_suffix * (1 - alpha) + _prefix * alpha)
+                    except(RuntimeError):
+                        print("Error")
+                    sample['sample'][sample_i - 1, :, :, -unfolding_handshake + len:len] = _blend
+                    sample['sample'][sample_i, :, :, :unfolding_handshake] = _blend
+            elif ((unfolding_handshake > 0) and not (second_take_only)):
+                for sample_i in range(1, sample['sample'].shape[0]):
+                    _suffix = sample['sample'][sample_i - 1, :, :, -unfolding_handshake:]
+                    _prefix = sample['sample'][sample_i, :, :, :unfolding_handshake]
+                    _blend = (_suffix * (1 - alpha) + _prefix * alpha)
+                    sample['sample'][sample_i - 1, :, :, -unfolding_handshake:] = _blend
+                    sample['sample'][sample_i, :, :, :unfolding_handshake] = _blend
             if dump_steps is not None and i in dump_steps:
                 dump.append(deepcopy(sample["sample"]))
             final = sample
@@ -670,6 +724,7 @@ class GaussianDiffusion:
         model_kwargs=None,
         device=None,
         progress=False,
+        predict_two_person=False,
         skip_timesteps=0,
         init_image=None,
         randomize_class=False,
@@ -690,7 +745,10 @@ class GaussianDiffusion:
         if noise is not None:
             img = noise
         else:
-            img = th.randn(*shape, device=device)
+            if predict_two_person:
+                img = [th.randn(*shape, device=device), th.randn(*shape, device=device)]
+            else:
+                img = th.randn(*shape, device=device)
 
         if skip_timesteps and init_image is None:
             init_image = th.zeros_like(img)
@@ -699,7 +757,11 @@ class GaussianDiffusion:
 
         if init_image is not None:
             my_t = th.ones([shape[0]], device=device, dtype=th.long) * indices[0]
-            img = self.q_sample(init_image, my_t, img)
+            if predict_two_person:
+                img[0] = self.q_sample(init_image[0].to(device), my_t, img[0], model_kwargs=model_kwargs)
+                img[1] = self.q_sample(init_image[1].to(device), my_t, img[1], model_kwargs=model_kwargs)
+            else:
+                img = self.q_sample(init_image, my_t, img, model_kwargs=model_kwargs)
 
         if progress:
             # Lazy import so that we don't depend on tqdm.
@@ -715,6 +777,8 @@ class GaussianDiffusion:
                                                device=model_kwargs['y'].device)
             with th.no_grad():
                 sample_fn = self.p_sample_with_grad if cond_fn_with_grad else self.p_sample
+                if predict_two_person:
+                    sample_fn = self.p_sample_multi
                 out = sample_fn(
                     model,
                     img,
@@ -727,7 +791,93 @@ class GaussianDiffusion:
                 )
                 yield out
                 img = out["sample"]
-                
+
+    def p_sample_multi(
+        self,
+        model,
+        x,
+        t,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        model_kwargs=None,
+        const_noise=False,
+    ):
+        """
+        Sample x_{t-1} from the model at the given timestep.
+
+        :param model: the model to sample from.
+        :param x: the current tensor at x_{t-1}.
+        :param t: the value of t, starting at 0 for the first diffusion step.
+        :param clip_denoised: if True, clip the x_start prediction to [-1, 1].
+        :param denoised_fn: if not None, a function which applies to the
+            x_start prediction before it is used to sample.
+        :param cond_fn: if not None, this is a gradient function that acts
+                        similarly to the model.
+        :param model_kwargs: if not None, a dict of extra keyword arguments to
+            pass to the model. This can be used for conditioning.
+        :return: a dict containing the following keys:
+                 - 'sample': a random sample from the model.
+                 - 'pred_xstart': a prediction of x_0.
+        """
+
+        x1, x2 = x
+
+        if 'inpainted_motion_multi' in model_kwargs['y'].keys():
+            model_kwargs['y']['inpainted_motion'] = model_kwargs['y']['inpainted_motion_multi'][0]
+
+        model_kwargs['y']['other_motion'] = x2
+        out1 = self.p_mean_variance(
+            model,
+            x1,
+            t,
+            clip_denoised=clip_denoised,
+            denoised_fn=denoised_fn,
+            model_kwargs=model_kwargs,
+        )
+
+        if 'inpainted_motion_multi' in model_kwargs['y'].keys():
+            model_kwargs['y']['inpainted_motion'] = model_kwargs['y']['inpainted_motion_multi'][1]
+
+        model_kwargs['y']['other_motion'] = x1
+        out2 = self.p_mean_variance(
+            model,
+            x2,
+            t,
+            clip_denoised=clip_denoised,
+            denoised_fn=denoised_fn,
+            model_kwargs=model_kwargs,
+        )
+
+        def handle_sample(_x, _out, _cond_fn, _t, _const_noise):
+            noise = th.randn_like(_x)
+            # print('const_noise', const_noise)
+            if _const_noise:
+                noise = noise[[0]].repeat(_x.shape[0], 1, 1, 1)
+
+            nonzero_mask = (
+                (_t != 0).float().view(-1, *([1] * (len(_x.shape) - 1)))
+            )  # no noise when t == 0
+            if _cond_fn is not None:
+                _out["mean"] = self.condition_mean(
+                    _cond_fn, _out, _x, _t, model_kwargs=model_kwargs
+                )
+            if self.multi_train_mode == 'prefix':
+                assert "inpainting_mask" in model_kwargs["y"].keys()
+                # FOR FINETUNED MODELS ONLY !!
+                inpainting_mask = model_kwargs["y"]["inpainting_mask"].to(noise.device)
+                inpainting_mask = inpainting_mask.float()
+                noise *= (1. - inpainting_mask)
+            _sample = _out["mean"] + nonzero_mask * th.exp(0.5 * _out["log_variance"]) * noise
+            return _sample
+
+        sample1 = handle_sample(x1, out1, cond_fn, t, const_noise)
+        sample2 = handle_sample(x2, out2, cond_fn, t, const_noise)
+        sample = (sample1, sample2)
+        out = (out1, out2)
+
+        return {"sample": sample, "pred_xstart": (out1["pred_xstart"], out2["pred_xstart"])}
+
 
     def ddim_sample(
         self,
@@ -963,7 +1113,7 @@ class GaussianDiffusion:
 
         if init_image is not None:
             my_t = th.ones([shape[0]], device=device, dtype=th.long) * indices[0]
-            img = self.q_sample(init_image, my_t, img)
+            img = self.q_sample(init_image, my_t, img, model_kwargs=model_kwargs)
 
         if progress:
             # Lazy import so that we don't depend on tqdm.
@@ -1156,7 +1306,7 @@ class GaussianDiffusion:
 
         if init_image is not None:
             my_t = th.ones([shape[0]], device=device, dtype=th.long) * indices[0]
-            img = self.q_sample(init_image, my_t, img)
+            img = self.q_sample(init_image, my_t, img, model_kwargs=model_kwargs)
 
         if progress:
             # Lazy import so that we don't depend on tqdm.
@@ -1239,7 +1389,6 @@ class GaussianDiffusion:
         """
 
         # enc = model.model._modules['module']
-        # Prepare the data
         enc = model.model
         mask = model_kwargs['y']['mask']
         get_xyz = lambda sample: enc.rot2xyz(sample, mask=None, pose_rep=enc.pose_rep, translation=enc.translation,
@@ -1252,10 +1401,14 @@ class GaussianDiffusion:
             model_kwargs = {}
         if noise is None:
             noise = th.randn_like(x_start)
-        x_t = self.q_sample(x_start, t, noise=noise) # x_t = g(t) * x_start + f(t) * noise 
+        x_t = self.q_sample(x_start, t, noise=noise, model_kwargs=model_kwargs)
+
+        if hasattr(model.model, "is_multi") and model.model.is_multi:
+            noise2 = th.randn_like(x_start)
+            model_kwargs['y']['other_motion'] = self.q_sample(model_kwargs['y']['other_motion'], t, noise=noise2, model_kwargs=model_kwargs)
+
         terms = {}
 
-        # Run the model and get the loss
         if self.loss_type == LossType.KL or self.loss_type == LossType.RESCALED_KL:
             terms["loss"] = self._vb_terms_bpd(
                 model=model,
@@ -1267,7 +1420,6 @@ class GaussianDiffusion:
             )["output"]
             if self.loss_type == LossType.RESCALED_KL:
                 terms["loss"] *= self.num_timesteps
-                
         elif self.loss_type == LossType.MSE or self.loss_type == LossType.RESCALED_MSE:
             model_output = model(x_t, self._scale_timesteps(t), **model_kwargs)
 
@@ -1278,7 +1430,6 @@ class GaussianDiffusion:
                 B, C = x_t.shape[:2]
                 assert model_output.shape == (B, C * 2, *x_t.shape[2:])
                 model_output, model_var_values = th.split(model_output, C, dim=1)
-                
                 # Learn the variance using the variational bound, but don't let
                 # it affect our mean prediction.
                 frozen_out = th.cat([model_output.detach(), model_var_values], dim=1)
@@ -1307,7 +1458,56 @@ class GaussianDiffusion:
 
             target_xyz, model_output_xyz = None, None
 
-            self.masks = [mask.to(target.device) for mask in self.masks]
+
+            if self.lambda_rcxyz or self.lambda_vel_rcxyz or self.lambda_fc or self.lambda_vel:
+                # transform = SlimSMPLTransform(batch_size=bs, name='SlimSMPLTransform', ename='smplnh',
+                #                           normalization=True)  # data_loader.dataset.transform
+                # target is [bs, nfeats, 1, seq_len]
+                # model_output is the same
+                target_xyz_tmp = target.squeeze(2).permute(0, 2, 1)
+                # Datastruct = transform.SlimDatastruct
+                Datastruct = self.Datastruct #transform.SlimDatastruct
+                target_xyz = Datastruct(features=target_xyz_tmp).joints.permute(0, 2, 3, 1) #[bs,seq_len,joints,3]->[bs,joints,3,seq_len]
+                model_output_xyz_tmp = model_output.squeeze(2).permute(0, 2, 1)
+                model_output_xyz = Datastruct(features=model_output_xyz_tmp).joints.permute(0, 2, 3, 1)
+
+            if self.lambda_rcxyz > 0.:
+                # target_xyz = get_xyz(target)  # [bs, nvertices(vertices)/njoints(smpl), 3, nframes]
+                # model_output_xyz = get_xyz(model_output)  # [bs, nvertices, 3, nframes]
+                terms["rcxyz_mse"] = self.masked_l2(target_xyz, model_output_xyz, mask)  # mean_flat((target_xyz - model_output_xyz) ** 2)
+
+            if self.lambda_vel_rcxyz > 0.:
+                if self.data_rep == 'rot6d' and dataset.dataname in ['humanact12', 'uestc', 'BABEL', 'babel']:
+                    # target_xyz = get_xyz(target) if target_xyz is None else target_xyz
+                    # model_output_xyz = get_xyz(model_output) if model_output_xyz is None else model_output_xyz
+                    target_xyz_vel = (target_xyz[:, :, :, 1:] - target_xyz[:, :, :, :-1])
+                    model_output_xyz_vel = (model_output_xyz[:, :, :, 1:] - model_output_xyz[:, :, :, :-1])
+                    terms["vel_xyz_mse"] = self.masked_l2(target_xyz_vel, model_output_xyz_vel, mask[:, :, :, 1:])
+
+            if self.lambda_fc > 0.:
+                # torch.autograd.set_detect_anomaly(True)
+                if self.data_rep == 'rot6d' and dataset.dataname in ['humanact12', 'uestc', 'BABEL', 'babel']:
+                    # target_xyz = get_xyz(target) if target_xyz is None else target_xyz
+                    # model_output_xyz = get_xyz(model_output) if model_output_xyz is None else model_output_xyz
+                    # 'L_Ankle',  # 7, 'R_Ankle',  # 8 , 'L_Foot',  # 10, 'R_Foot',  # 11
+                    l_ankle_idx, r_ankle_idx, l_foot_idx, r_foot_idx = 7, 8, 10, 11
+                    relevant_joints = [l_ankle_idx, l_foot_idx, r_ankle_idx, r_foot_idx]
+                    gt_joint_xyz = target_xyz[:, relevant_joints, :, :]  # [BatchSize, 4, 3, Frames]
+                    gt_joint_vel = torch.linalg.norm(gt_joint_xyz[:, :, :, 1:] - gt_joint_xyz[:, :, :, :-1], axis=2)  # [BatchSize, 4, Frames]
+                    fc_mask = torch.unsqueeze((gt_joint_vel <= 0.01), dim=2).repeat(1, 1, 3, 1)
+                    pred_joint_xyz = model_output_xyz[:, relevant_joints, :, :]  # [BatchSize, 4, 3, Frames]
+                    pred_vel = pred_joint_xyz[:, :, :, 1:] - pred_joint_xyz[:, :, :, :-1]
+                    pred_vel[~fc_mask] = 0
+                    terms["fc"] = self.masked_l2(pred_vel,
+                                                 torch.zeros(pred_vel.shape, device=pred_vel.device),
+                                                 mask[:, :, :, 1:])
+            if self.lambda_vel > 0.:
+                target_vel = (target[..., 1:] - target[..., :-1])
+                model_output_vel = (model_output[..., 1:] - model_output[..., :-1])
+                terms["vel_mse"] = self.masked_l2(target_vel[:, :-1, :, :], # Remove last joint, is the root location!
+                                                  model_output_vel[:, :-1, :, :],
+                                                  mask[:, :, :, 1:])  # mean_flat((target_vel - model_output_vel) ** 2)
+
             if len(self.lambda_masks) != 0:
                 for mask_idx in range(len(self.lambda_masks)):
                     terms[f'mask_{mask_idx}'] = self.masked_l2(target, model_output, self.masks[mask_idx])
@@ -1317,13 +1517,13 @@ class GaussianDiffusion:
             for mask_idx in range(len(self.lambda_masks)):
                 terms['loss'] = terms['loss'] + (self.lambda_masks[mask_idx] * terms.get(f'mask_{mask_idx}', 0.))
 
-                            
+
 
         else:
             raise NotImplementedError(self.loss_type)
 
         return terms
-    
+
     def fc_loss_rot_repr(self, gt_xyz, pred_xyz, mask):
         def to_np_cpu(x):
             return x.detach().cpu().numpy()
@@ -1440,54 +1640,7 @@ class GaussianDiffusion:
         # print(vel_foots.shape)
         return 0
     # TODO - NOT USED YET, JUST COMMITING TO NOT DELETE THIS AND KEEP INITIAL IMPLEMENTATION, NOT DONE!
-    def velocity_consistency_loss_humanml3d(self, target, model_output):
-        # root_rot_velocity (B, seq_len, 1)
-        # root_linear_velocity (B, seq_len, 2)
-        # root_y (B, seq_len, 1)
-        # ric_data (B, seq_len, (joint_num - 1)*3) , XYZ
-        # rot_data (B, seq_len, (joint_num - 1)*6) , 6D
-        # local_velocity (B, seq_len, joint_num*3) , XYZ
-        # foot contact (B, seq_len, 4) ,
-
-        target_fc = target[:, -4:, :, :]
-        root_rot_velocity = target[:, :1, :, :]
-        root_linear_velocity = target[:, 1:3, :, :]
-        root_y = target[:, 3:4, :, :]
-        ric_data = target[:, 4:67, :, :]  # 4+(3*21)=67
-        rot_data = target[:, 67:193, :, :]  # 67+(6*21)=193
-        local_velocity = target[:, 193:259, :, :]  # 193+(3*22)=259
-        contact = target[:, 259:, :, :]  # 193+(3*22)=259
-
-        calc_vel_from_xyz = ric_data[:, :, :, 1:] - ric_data[:, :, :, :-1]
-        velocity_from_vector = local_velocity[:, 3:, :, 1:]  # Slicing out root
-        r_rot_quat, r_pos = motion_process.recover_root_rot_pos(target.permute(0, 2, 3, 1).type(th.FloatTensor))
-        print(f'r_rot_quat: {r_rot_quat.shape}')
-        print(f'calc_vel_from_xyz: {calc_vel_from_xyz.shape}')
-        calc_vel_from_xyz = calc_vel_from_xyz.permute(0, 2, 3, 1)
-        calc_vel_from_xyz = calc_vel_from_xyz.reshape((1, 1, -1, 21, 3)).type(th.FloatTensor)
-        r_rot_quat_adapted = r_rot_quat[..., :-1, None, :].repeat((1,1,1,21,1)).to(calc_vel_from_xyz.device)
-        print(f'calc_vel_from_xyz: {calc_vel_from_xyz.shape} , {calc_vel_from_xyz.device}')
-        print(f'r_rot_quat_adapted: {r_rot_quat_adapted.shape}, {r_rot_quat_adapted.device}')
-
-        calc_vel_from_xyz = motion_process.qrot(r_rot_quat_adapted, calc_vel_from_xyz)
-        calc_vel_from_xyz = calc_vel_from_xyz.reshape((1, 1, -1, 21 * 3))
-        calc_vel_from_xyz = calc_vel_from_xyz.permute(0, 3, 1, 2)
-        print(f'calc_vel_from_xyz: {calc_vel_from_xyz.shape} , {calc_vel_from_xyz.device}')
-
-        import matplotlib.pyplot as plt
-        for i in range(21):
-            plt.plot(np.linalg.norm(calc_vel_from_xyz[:,i*3:(i+1)*3,:,:].cpu().detach().numpy().reshape((3, -1)), axis=0), label='Calc Vel')
-            plt.plot(np.linalg.norm(velocity_from_vector[:,i*3:(i+1)*3,:,:].cpu().detach().numpy().reshape((3, -1)), axis=0), label='Vector Vel')
-            plt.title(f'Joint idx: {i}')
-            plt.legend()
-            plt.show()
-        print(calc_vel_from_xyz.shape)
-        print(velocity_from_vector.shape)
-        diff = calc_vel_from_xyz-velocity_from_vector
-        print(np.linalg.norm(diff.cpu().detach().numpy().reshape((63, -1)), axis=0))
-
-        return 0
-
+   
 
     def _prior_bpd(self, x_start):
         """
@@ -1534,7 +1687,7 @@ class GaussianDiffusion:
         for t in list(range(self.num_timesteps))[::-1]:
             t_batch = th.tensor([t] * batch_size, device=device)
             noise = th.randn_like(x_start)
-            x_t = self.q_sample(x_start=x_start, t=t_batch, noise=noise)
+            x_t = self.q_sample(x_start=x_start, t=t_batch, noise=noise, model_kwargs=model_kwargs)
             # Calculate VLB term at the current timestep
             with th.no_grad():
                 out = self._vb_terms_bpd(

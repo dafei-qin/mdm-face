@@ -20,6 +20,8 @@ from data_loaders.tensors import collate, verts_collate
 from data_loaders.facs.dataset import facs_data
 import soundfile as sf
 from copy import deepcopy
+import trimesh
+from data_loaders.biwi.render import init_renderer, render_sequence
 def main():
     args = generate_args()
     fixseed(args.seed)
@@ -31,8 +33,8 @@ def main():
     fps = 12.5 if args.dataset == 'kit' else 20
     if args.dataset == 'biwi':
         fps = 25
-    n_frames = min(max_frames, int(args.motion_length*fps))
-    is_using_data = not any([args.input_text, args.text_prompt, args.action_file, args.action_name, args.audio_file, args.inpainting])
+    n_frames = max_frames
+    is_using_data = not any([args.input_text, args.text_prompt, args.action_file, args.action_name, args.audio_file, args.inpainting, args.dataset == 'facs'])
     dist_util.setup_dist(args.device)
     if out_path == '':
         out_path = os.path.join(os.path.dirname(args.model_path),
@@ -61,13 +63,15 @@ def main():
             action_text = fr.readlines()
         action_text = [s.replace('\n', '') for s in action_text]
         args.num_samples = len(action_text)
-    elif args.inpainting_file != '':
-        assert args.inpainting_file != ''
-        assert os.path.exists(args.inpainting_file)
-        files = open(args.inpainting_file, 'r').readlines()
-        files = [s.replace('\n', '') for s in files]
-        files = [s for s in files if s != '']
-        files = [(int(s.split('_')[0]), float(s.split('_')[1])) for s in files]
+    elif args.dataset == 'facs':
+        if args.inpainting_file != '':
+            assert os.path.exists(args.inpainting_file)
+            files = open(args.inpainting_file, 'r').readlines()
+            files = [s.replace('\n', '') for s in files]
+            files = [s for s in files if s != '']
+            files = [(int(s.split('_')[0]), float(s.split('_')[1])) for s in files]
+        else:
+            files = [0, 5, 10, 15] # Just chose some random sequences
         args.num_samples = len(files)
     else:
         args.num_samples = 1
@@ -152,31 +156,37 @@ def main():
         args.num_samples = len(collate_args)
         args.batch_size = args.num_samples
 
-        if args.inpainting:
-            
+        
+        if args.dataset == 'facs':
+            inpainting = args.inpainting
             if args.data_dir == '':
-                dataset = facs_data(split='test', num_frames=args.num_frames, inpainting=True, sampling='disabled') # Disable data sampling 
+                dataset = facs_data(split='test', num_frames=args.num_frames, inpainting=inpainting, sampling='disabled') # Disable data sampling 
             else:
-                dataset = facs_data(datapath=args.data_dir, split='test', num_frames=args.num_frames, inpainting=True, sampling='disabled')
+                dataset = facs_data(datapath=args.data_dir, split='test', num_frames=args.num_frames, inpainting=inpainting, sampling='disabled')
+
             collate_args = [dataset[i[0]] for i in files]
+            orig_collate_args = deepcopy(collate_args)
             for idx, _c in enumerate(collate_args):
                 _c['var'] = files[idx][1]
                 _c['action_text'] = f'{files[idx][1]:.2f}'
+            
 
         if args.cond_var:
             write_names = [f'_idx={f[0]:03d}_std={f[1]:.2f}' for f in files]
             write_names = [f'{w}_rep={r:02d}' for r in range(args.num_repetitions) for w in write_names]
         if args.dataset in ['biwi', 'facs']:
-            _, model_kwargs = verts_collate(collate_args)
+            gts, model_kwargs = verts_collate(collate_args)
 
         else:
-            _, model_kwargs = collate(collate_args)
+            gts, model_kwargs = collate(collate_args)
 
     all_motions = []
     all_lengths = []
     all_text = []
     all_audios = []
+    model_kwargs_bk = deepcopy(model_kwargs)
     for rep_i in range(args.num_repetitions):
+        model_kwargs = deepcopy(model_kwargs_bk)
         print(f'### Sampling [repetitions #{rep_i}]')
 
         # add CFG scale to batch
@@ -188,67 +198,70 @@ def main():
         # Here add the beginning and the ending frames to do inpainting
         init_image = None
         if args.inpainting:
-            init_image = _
+            init_image = gts
             init_image = init_image.to(dist_util.dev())
             model_kwargs['y']['inpainting_mask'] = model_kwargs['y']['inpainting_mask'].to(dist_util.dev())
             model_kwargs['y']['inpainted_motion'] = model_kwargs['y']['inpainted_motion'].to(dist_util.dev())
+            
+        if args.double_take:
+            from utils.double_take_utils import double_take_arb_len, unfold_sample_arb_len
 
-        sample = sample_fn(
-            model,
-            # (args.batch_size, model.njoints, model.nfeats, n_frames),  # BUG FIX - this one caused a mismatch between training and inference
-            (args.batch_size, model.njoints, model.nfeats, max_frames),  # BUG FIX
-            clip_denoised=False,
-            model_kwargs=model_kwargs,
-            skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
-            init_image=init_image,
-            progress=True,
-            dump_steps=None,
-            noise=None,
-            const_noise=False,
-        )
+            samples_per_rep_list, samples_type = double_take_arb_len(args, diffusion, model, model_kwargs, n_frames,  eval_mode=False)
+            step_sizes = np.zeros(len(model_kwargs['y']['lengths']), dtype=int)
+            for ii, len_i in enumerate(model_kwargs['y']['lengths']):
+                if ii == 0:
+                    step_sizes[ii] = len_i
+                    continue
+                step_sizes[ii] = step_sizes[ii-1] + len_i - args.handshake_size
 
-        # Recover XYZ *positions* from HumanML3D vector representation
-        if model.data_rep == 'hml_vec':
-            n_joints = 22 if sample.shape[1] == 263 else 21
-            sample = data.dataset.t2m_dataset.inv_transform(sample.cpu().permute(0, 2, 3, 1)).float()
-            sample = recover_from_ric(sample, n_joints)
-            sample = sample.view(-1, *sample.shape[2:]).permute(0, 2, 3, 1)
+            final_n_frames = step_sizes[-1]
 
-        rot2xyz_pose_rep = 'xyz' if model.data_rep in ['xyz', 'hml_vec'] else model.data_rep
-        rot2xyz_mask = None if rot2xyz_pose_rep == 'xyz' else model_kwargs['y']['mask'].reshape(args.batch_size, n_frames).bool()
-        if rot2xyz_pose_rep not in ['face_verts', 'facs']:
-            sample = model.rot2xyz(x=sample, mask=rot2xyz_mask, pose_rep=rot2xyz_pose_rep, glob=True, translation=True,
-                                jointstype='smpl', vertstrans=True, betas=None, beta=0, glob_rot=None,
-                                get_rotations_back=False)
-        else:
-            sample = sample
+            for sample_i, samples_type_i in zip(samples_per_rep_list, samples_type):
 
+                sample = unfold_sample_arb_len(sample_i, args.handshake_size, step_sizes, final_n_frames, model_kwargs)
 
-        if args.inpainting:
-            sample[..., 0] = init_image[..., 0]
-            sample[..., -1] = init_image[..., -1]
-        if args.unconstrained:
-            all_text += ['unconstrained'] * args.num_samples
-        else:
-            text_key = 'text' if 'text' in model_kwargs['y'] else 'action_text'
-            all_text += model_kwargs['y'][text_key]
+                all_motions.append(sample.squeeze().cpu().numpy()[np.newaxis])
+                all_lengths.append(model_kwargs['y']['lengths'].cpu().numpy())
+        else:     
+            sample = sample_fn(
+                model,
+                # (args.batch_size, model.njoints, model.nfeats, n_frames),  # BUG FIX - this one caused a mismatch between training and inference
+                (args.batch_size, model.njoints, model.nfeats, max_frames),  # BUG FIX
+                clip_denoised=False,
+                model_kwargs=model_kwargs,
+                skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
+                init_image=init_image,
+                progress=True,
+                dump_steps=None,
+                noise=None,
+                const_noise=False,
+            )
 
-        all_motions.append(sample.cpu().numpy())
-        all_lengths.append(model_kwargs['y']['lengths'].cpu().numpy())
-        audios = []
-        if args.audio_file != '':
-            for idx in range(len(wavs)):
-                
-                audios.append([])
-                for _idx, arg in enumerate(collate_args):
-                    if arg['idx'] == idx:
-                        audios[idx].append(all_motions[-1][_idx])
-                        
-            audios = [np.concatenate(i, axis=-1) for i in audios]
-            audios = [audio[..., :int(np.floor(len(wavs[_idx]) / fps2ar))] for _idx, audio in enumerate(audios)] # Clip to the length of the audio
-        for au in audios:
-            all_audios.append(au)
-        print(f"created {len(all_motions) * args.batch_size} samples")
+            if args.inpainting:
+                sample[..., 0] = init_image[..., 0]
+                sample[..., -1] = init_image[..., -1]
+            if args.unconstrained:
+                all_text += ['unconstrained'] * args.num_samples
+            else:
+                text_key = 'text' if 'text' in model_kwargs['y'] else 'action_text'
+                all_text += model_kwargs['y'][text_key]
+
+            all_motions.append(sample.cpu().numpy())
+            all_lengths.append(model_kwargs['y']['lengths'].cpu().numpy())
+            audios = []
+            if args.audio_file != '':
+                for idx in range(len(wavs)):
+                    
+                    audios.append([])
+                    for _idx, arg in enumerate(collate_args):
+                        if arg['idx'] == idx:
+                            audios[idx].append(all_motions[-1][_idx])
+                            
+                audios = [np.concatenate(i, axis=-1) for i in audios]
+                audios = [audio[..., :int(np.floor(len(wavs[_idx]) / fps2ar))] for _idx, audio in enumerate(audios)] # Clip to the length of the audio
+            for au in audios:
+                all_audios.append(au)
+            print(f"created {len(all_motions) * args.batch_size} samples")
 
 
     all_motions = np.concatenate(all_motions, axis=0)
@@ -264,7 +277,7 @@ def main():
     print(f"saving results file to [{npy_path}]")
     np.save(npy_path,
             {'motion': all_motions, 'text': all_text, 'lengths': all_lengths,
-             'num_samples': args.num_samples, 'num_repetitions': args.num_repetitions})
+            'num_samples': args.num_samples, 'num_repetitions': args.num_repetitions})
     with open(npy_path.replace('.npy', '.txt'), 'w') as fw:
         fw.write('\n'.join(all_text))
     with open(npy_path.replace('.npy', '_len.txt'), 'w') as fw:
@@ -275,13 +288,25 @@ def main():
         from data_loaders.biwi.render import save
         if args.audio_file != '':
             all_motions = all_audios
-            save(all_motions, write_names, npy_path, wavs)
+            if args.render:
+                mesh = trimesh.load('./biwi_ssp_8000_deformed.obj', process=False)
+                ps_mesh = init_renderer(mesh)
+                for idx in range(len(all_motions)):
+                    seq = all_motions[idx]
+                    wav = wavs[idx]
+                    filename = write_names[idx]
+                    print(seq.shape, wav.shape, os.path.join(os.path.dirname(npy_path), filename + '.mp4'))
+                    render_sequence(ps_mesh, seq.transpose(2, 0, 1), os.path.join(os.path.dirname(npy_path), filename+'.mp4', ), audio=wav)
+            else:
+                save(all_motions, write_names, npy_path, wavs)
         else:
             save(all_motions, write_names, npy_path)
         print(f'PC2 results at at [{os.path.abspath(os.path.dirname(npy_path))}]')
     elif model.data_rep == 'facs':
         from data_loaders.facs.render import save
-        save(data.dataset, all_motions, npy_path, write_names)
+        save(data.dataset, all_motions, npy_path, write_names[:len(all_motions)])
+        gts_name = [f"gt_{i[0]:02d}_std={k['var'].item():.2f}" for (i, k) in zip(files, orig_collate_args)]
+        save(data.dataset, gts, npy_path, gts_name)
     else:
         skeleton = paramUtil.kit_kinematic_chain if args.dataset == 'kit' else paramUtil.t2m_kinematic_chain
 

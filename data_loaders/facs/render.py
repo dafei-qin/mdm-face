@@ -2,6 +2,7 @@ import sys
 sys.path.append('/raid/HKU_TK_GROUP/qindafei/motion-diffusion-model/')
 from data_loaders.facs.ICT_model import ICT_model
 from data_loaders.facs.facs2obj import mediapipe2ict
+from data_loaders.facs.utils_rot import dof2rot
 import numpy as np
 from copy import deepcopy
 from data_loaders.facs.utils_pc2 import writePC2
@@ -29,8 +30,16 @@ def save(dataset, all_motions, path, write_names=[]):
     facs = ict_model.faces
 
     facs = [d[:52].squeeze().transpose(1, 0) for d in all_motions]
-    trans = [None for d in all_motions]
-    for _idx, (f, t) in enumerate(zip(facs, trans)):
+    trans = [d[52:55] for d in all_motions]
+    rot = [d[55:61] for d in all_motions]
+    rot = [dof2rot(d) for d in rot]
+    trans4x4 = [np.zeros((d.shape[0], 4, 4)) for d in rot] 
+    for idx in range(len(trans)):
+        trans4x4[idx][:, :3, :3] = rot[idx]
+        trans4x4[idx][:, :3, -1] = trans[idx]
+        trans4x4[idx][:, -1, -1] = 1
+
+    for _idx, (f, t) in enumerate(zip(facs, trans4x4)):
         if len(write_names) == 0:
             write_name = f"{_idx:02d}"
         else:

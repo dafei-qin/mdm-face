@@ -104,7 +104,7 @@ def add_data_options(parser):
                        help="Dataset name (choose from list).")
     group.add_argument("--data_dir", default="", type=str,
                        help="If empty, will use defaults according to the specified dataset.")
-
+    group.add_argument("--render", default=False, action='store_true', help='if set, render the meshes during evaluation')
 
 def add_training_options(parser):
     group = parser.add_argument_group('training')
@@ -137,7 +137,7 @@ def add_training_options(parser):
 
     group.add_argument("--resume_checkpoint", default="", type=str,
                        help="If not empty, will start from the specified checkpoint (path to model###.pt file).")
-    group.add_argument("--render", default=False, action='store_true', help='if set, render the meshes during evaluation')
+
     group.add_argument("--task_name", help="Name of the current running task", default='')
     group.add_argument("--lambda_masks", default=[], nargs='*', help='lambda value for each mask to be used to calculate the metrics. Must has the same length as masks.')
     group.add_argument("--masks", default=[], nargs='*', help='location of different masks.')
@@ -161,6 +161,30 @@ def add_sampling_options(parser):
                        help="Number of repetitions, per sample (text prompt/action)")
     group.add_argument("--guidance_param", default=2.5, type=float,
                        help="For classifier-free sampling - specifies the s parameter, as defined in the paper.")
+
+
+def add_double_take_options(parser):
+    group = parser.add_argument_group('double_take')
+    # group.add_argument("--double_take", action='store_true',
+    #                    help="double take on the generated motion")
+    group.add_argument("--double_take", default=False, action='store_true',
+                       help="double take on the generated motion")
+    group.add_argument("--second_take_only", action='store_true',
+                       help="double take on the generated motion")
+    group.add_argument("--handshake_size", default=20, type=int,
+                       help="handshake size for unfolding")
+    group.add_argument("--blend_len", default=20, type=int,
+                       help="blending with linear mask length")
+    group.add_argument("--repaint_rep", default=10, type=int,
+                       help="number of times to sample during repaint")
+    group.add_argument("--repaint", action='store_true',
+                       help="use repaint")
+    group.add_argument("--debug_double_take", action='store_true',
+                       help="double_take debug mode")
+    group.add_argument("--skip_steps_double_take", default=100, type=int,
+                       help="number of times to sample during repaint")
+
+
 
 def add_generate_options(parser):
     group = parser.add_argument_group('generate')
@@ -249,6 +273,7 @@ def generate_args():
     add_base_options(parser)
     add_sampling_options(parser)
     add_generate_options(parser)
+    add_double_take_options(parser)
     args = parse_and_load_from_model(parser)
     cond_mode = get_cond_mode(args)
 
