@@ -95,6 +95,7 @@ def add_model_options(parser):
                             "Currently tested on HumanAct12 only.")
     group.add_argument("--cond_audio", action='store_true', help='Condition the model on audio inputs. Currently work on BIWI only')
     group.add_argument("--cond_var", action='store_true', help='Condition the model on the variance of the input FACS. Currently work on FACS only')
+    group.add_argument("--cond_exp", action='store_true', help='Condition the model on the action of expressions, currently work on MEAD FACS only')
     group.add_argument("--num_frames", default=60, type=int,
                        help="Limit for the maximal number of frames. In HumanML3D and KIT this field is ignored.")
 
@@ -205,6 +206,7 @@ def add_generate_options(parser):
                        help="An action name to be generated. If empty, will take text prompts from dataset.")
     group.add_argument("--inpainting", default=False, action='store_true', help='if set, will perform inpainting by using the  inpainting sequences instead of unconditional sampling')
     group.add_argument("--inpainting_file", default='', type=str, help='Path to a text file that lists names of sequences to be used for inpainting, the first and the last frame of the sequence will be used as the keyframes frames')
+    group.add_argument("--mead_file", default='', type=str, help='Path to a text file that lists expression and variance as conditions')
 
 
 def add_edit_options(parser):
@@ -254,6 +256,8 @@ def get_cond_mode(args):
             print('Error, variance condition only supports FACS dataset')
             raise NotImplementedError
         cond_mode = ['var']
+        if args.cond_exp:
+            cond_mode = ['var', 'action']
     return cond_mode
 
 

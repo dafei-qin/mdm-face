@@ -11,32 +11,53 @@ import pickle
 class facs_data(Dataset):
     dataname = "facs"
 
-    def __init__(self, datapath="/raid/HKU_TK_GROUP/qindafei/pkl/normalized", inpainting=False, **kargs):
+    def __init__(self, datapath="/raid/HKU_TK_GROUP/qindafei/pkl/normalized", inpainting=False, mead=False, **kargs):
         self.datapath = datapath
 
         super().__init__(**kargs)
+        self.var_factor = 2
         self.processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h")
         self._pose = {}
         self._num_frames_in_video = {}
         self._actions = {}
-        facs, facs_mean, facs_std = pickle.load(open(os.path.join(datapath, 'facs.pkl'), 'rb')).values()
+        self.mead = False
+        if 'mead' in datapath.lower():
+            mead = True
+            print('Detected MEAD dataset')
+        facs, facs_mean, facs_std, names = pickle.load(open(os.path.join(datapath, 'facs.pkl'), 'rb')).values()
         trans, trans_mean, trans_std = pickle.load(open(os.path.join(datapath, 'trans.pkl'), 'rb')).values()
         dof, dof_mean, dof_std = pickle.load(open(os.path.join(datapath, 'dof.pkl'), 'rb')).values()
+        if mead:
+            self.extracts = pickle.load(open(os.path.join(datapath, 'misc.pkl'), 'rb'))
+            self._idens, self._exps, self._levels, self._cameras, self._takes = self.extracts.values()
+            self.mead = True
+            labels = np.unique(self._exps)
+            self._action_to_label = {i:exp.lower() for i, exp in enumerate(labels)}
+            self._label_to_action = {exp.lower():i for i, exp in enumerate(labels)}
+            self._actions = [self._label_to_action[label.lower()] for label in self._exps]
+            self.num_actions = len(labels)
+            self._level_to_var = {'level_1': 0.3, 'level_2': 0.6, 'level_3': 0.9}
+        # TODO: deal with the misc info and condition the model on 
+        # TODO: But first visualize the BS
         # facs, facs_mean, facs_std = pickle.load(open(os.path.join(datapath, 'facs.pkl'), 'rb')).values()
         # trans, trans_mean, trans_std = pickle.load(open(os.path.join(datapath, 'trans.pkl'), 'rb')).values()
         self._pose = [f.astype(np.float32) for f in facs]
+        self._names = [os.path.basename(n).replace('.pkl', '') for n in names]
         self._trans = [f.astype(np.float32) for f in trans]
         self._dof = [f.astype(np.float32) for f in dof]
-        self._train = np.arange(len(self._pose) - 1000)
-        self._val = np.arange(len(self._pose) - 1000, len(self._pose) - 500)
-        self._test = np.arange(len(self._pose) - 500, len(self._pose))
+        self._train = np.arange(int(len(self._pose) * 0.9))
+        self._val = np.arange(int(len(self._pose) * 0.9), int(len(self._pose) * 0.95))
+        self._test = np.arange(int(len(self._pose) * 0.95), len(self._pose))
         self._facs_mean = facs_mean
         self._facs_std = facs_std
         self._trans_mean = trans_mean
         self._trans_std = trans_std
         self._dof_mean = dof_mean
         self._dof_std = dof_std
-        print(f'Loaded facs (CelebV-HQ) dataset, total num of sequences: [train]: {len(self._train)}, [val]: {len(self._val)}, [test]: {len(self._test)}')
+        if self.mead:
+            print(f'Loaded facs (MEAD) dataset, total num of sequences: [train]: {len(self._train)}, [val]: {len(self._val)}, [test]: {len(self._test)}')
+        else:
+            print(f'Loaded facs (CelebV-HQ) dataset, total num of sequences: [train]: {len(self._train)}, [val]: {len(self._val)}, [test]: {len(self._test)}')
 
         self._num_frames_in_video = [len(p) for p in self._pose]
         self.inpainting = inpainting
@@ -122,9 +143,9 @@ class facs_data(Dataset):
                 raise ValueError("Sampling not recognized.")
 
 
-        inp, var = self._get_data(data_index, frame_ix)
+        inp, var, name = self._get_data(data_index, frame_ix)
         action_text = f'{var.item():.2f}'
-        output = {'inp': inp, 'var': var, 'action_text': action_text}
+        output = {'inp': inp, 'var': var, 'action_text': action_text, 'name': name}
         if self.inpainting:
             output['inpainted_motion'] = inp
             output['inpainting_mask'] = torch.zeros_like(inp).bool()
@@ -132,17 +153,30 @@ class facs_data(Dataset):
             output['inpainting_mask'][..., -10:] = 1
         if hasattr(self, '_actions') and hasattr(self, '_action_classes'):
             output['action_text'] = self.action_to_action_name(self.get_action(data_index))
+        if self.mead:
+            output['iden'] = self._idens[data_index]
+            output['exp'] = self._exps[data_index]
+            output['level'] = self._levels[data_index]
+            output['take'] = self._takes[data_index]
+            output['camera'] = self._cameras[data_index]
+            output['action'] = self._actions[data_index]
 
         return output
     
     def _get_data(self, data_index, frame_ix):
         pose = self._pose[data_index][frame_ix]
+        name = self._names[data_index]
         trans = self._trans[data_index][frame_ix].reshape(-1, 3)
         dof = self._dof[data_index][frame_ix].reshape(-1, 6)
         # trans = self._trans[data_index][frame_ix].reshape(-1, 16)
         pose = np.concatenate((pose, trans, dof), axis=-1)
-        var = pose.std(axis=0).mean()
-        return torch.from_numpy(pose).transpose(0, 1).unsqueeze(1), torch.tensor([var]).unsqueeze(0)
+        if self.mead: # Here we use the level to map to the intensity
+            var_level = self._level_to_var[self._levels[data_index]]
+            # var_raw = pose.std(axis=0).mean() * self.var_factor
+            var = var_level
+        else:
+            var = pose.std(axis=0).mean()  * self.var_factor
+        return torch.from_numpy(pose).transpose(0, 1).unsqueeze(1), torch.tensor([var]).unsqueeze(0), name
     
     def de_normalize(self, facs, trans, dof):
         facs = facs * self._facs_std + self._facs_mean
@@ -155,3 +189,7 @@ class facs_data(Dataset):
 
         dof = dof * self._dof_std + self._dof_mean
         return facs, trans, dof
+
+    def action_name_to_action(self, label_list):
+        return [self._label_to_action[name] for name in label_list]
+        

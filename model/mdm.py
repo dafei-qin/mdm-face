@@ -187,14 +187,14 @@ class MDM(nn.Module):
             emb += self.mask_cond(action_emb, force_mask=force_mask)
         if 'audio' in self.cond_mode:
             enc_audio = self.encode_speech(y['au'])
-            # enc_audio = 
 
             emb = emb +  self.mask_cond(enc_audio, force_mask=force_mask)
         
-        if 'var' in self.cond_mode:
+        if 'var' in self.cond_mode: # TODO: Too rude. Need refinement
             # var_emb = self.embed_var(y['var'])
             emb += self.mask_cond(y['var'].to(emb.device), force_mask=force_mask).unsqueeze(0)
-            
+        
+
         if self.arch == 'gru':
             x_reshaped = x.reshape(bs, njoints*nfeats, 1, nframes)
             emb_gru = emb.repeat(nframes, 1, 1)     #[#frames, bs, d]
@@ -204,7 +204,7 @@ class MDM(nn.Module):
 
         x = self.input_process(x)
 
-        if self.arch == 'trans_enc':
+        if self.arch == 'trans_enc': # TODO: Consider swich to AdaIN or more effective conditioning method
             # adding the timestep embed
             xseq = torch.cat((emb, x), axis=0)  # [seqlen+1, bs, d]
             xseq = self.sequence_pos_encoder(xseq)  # [seqlen+1, bs, d]

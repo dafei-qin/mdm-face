@@ -63,6 +63,13 @@ def main():
             action_text = fr.readlines()
         action_text = [s.replace('\n', '') for s in action_text]
         args.num_samples = len(action_text)
+    elif args.mead_file != '':
+        assert os.path.exists(args.mead_file)
+        with open(args.mead_file, 'r') as fr:
+            action_text = fr.readlines()
+        action_text = [a.strip() for a in action_text]
+        # action_text = [s.split(' ') for s in action_text]
+        args.num_samples = len(action_text)
     elif args.dataset == 'facs':
         if args.inpainting_file != '':
             assert os.path.exists(args.inpainting_file)
@@ -71,7 +78,7 @@ def main():
             files = [s for s in files if s != '']
             files = [(int(s.split('_')[0]), float(s.split('_')[1])) for s in files]
         else:
-            files = [0, 5, 10, 15] # Just chose some random sequences
+            files = [(0, 0.1), (5, 0.2), (10, 0.3), (15, 0.4)] # Just chose some random sequences
         args.num_samples = len(files)
     else:
         args.num_samples = 1
@@ -156,8 +163,12 @@ def main():
         args.num_samples = len(collate_args)
         args.batch_size = args.num_samples
 
-        
-        if args.dataset == 'facs':
+        if args.mead_file != '':
+            action = data.dataset.action_name_to_action([a.split(' ')[0] for a in action_text])
+            var = [float(a.split(' ')[1]) for a in action_text] 
+            collate_args = [dict(arg, action=one_action, action_text=one_action_text, name=one_action_text, var=one_var) for
+                            arg, one_action, one_action_text, one_var in zip(collate_args, action, action_text, var)]
+        elif args.dataset == 'facs':
             inpainting = args.inpainting
             if args.data_dir == '':
                 dataset = facs_data(split='test', num_frames=args.num_frames, inpainting=inpainting, sampling='disabled') # Disable data sampling 
@@ -170,8 +181,9 @@ def main():
                 _c['var'] = files[idx][1]
                 _c['action_text'] = f'{files[idx][1]:.2f}'
             
-
-        if args.cond_var:
+        if args.mead_file:
+            write_names = [a.replace(' ', '_') + f'_{i}' for i in range(args.num_repetitions) for a in action_text]
+        elif args.cond_var:
             write_names = [f'_idx={f[0]:03d}_std={f[1]:.2f}' for f in files]
             write_names = [f'{w}_rep={r:02d}' for r in range(args.num_repetitions) for w in write_names]
         if args.dataset in ['biwi', 'facs']:
@@ -305,8 +317,11 @@ def main():
     elif model.data_rep == 'facs':
         from data_loaders.facs.render import save
         save(data.dataset, all_motions, npy_path, write_names[:len(all_motions)])
-        gts_name = [f"gt_{i[0]:02d}_std={k['var'].item():.2f}" for (i, k) in zip(files, orig_collate_args)]
-        save(data.dataset, gts, npy_path, gts_name)
+        try:
+            gts_name = [f"gt_{i[0]:02d}_std={k['var'].item():.2f}" for (i, k) in zip(files, orig_collate_args)]
+            save(data.dataset, gts, npy_path, gts_name)
+        except:
+            print('GT saving failed, pass')
     else:
         skeleton = paramUtil.kit_kinematic_chain if args.dataset == 'kit' else paramUtil.t2m_kinematic_chain
 
