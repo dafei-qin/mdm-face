@@ -21,14 +21,17 @@ class facs_data(Dataset):
         self._num_frames_in_video = {}
         self._actions = {}
         self.mead = False
+        self.text = False
+        self._texts = []
         if 'mead' in datapath.lower():
             mead = True
             print('Detected MEAD dataset')
         try:
             facs, facs_mean, facs_std, names = pickle.load(open(os.path.join(datapath, 'facs.pkl'), 'rb')).values()
         except ValueError:
-            facs, facs_mean, facs_std, names, timesteps = pickle.load(open(os.path.join(datapath, 'facs.pkl'), 'rb')).values()
-
+            facs, facs_mean, facs_std, names, timesteps, actions, expressions = pickle.load(open(os.path.join(datapath, 'facs.pkl'), 'rb')).values()
+            self.text = True
+            self._texts = actions
         trans, trans_mean, trans_std = pickle.load(open(os.path.join(datapath, 'trans.pkl'), 'rb')).values()
         dof, dof_mean, dof_std = pickle.load(open(os.path.join(datapath, 'dof.pkl'), 'rb')).values()
         if mead:
@@ -164,7 +167,11 @@ class facs_data(Dataset):
             output['take'] = self._takes[data_index]
             output['camera'] = self._cameras[data_index]
             output['action'] = self._actions[data_index]
-
+        if self.text:
+            if len(self._texts[data_index]) == 0:
+                output['text'] = ''
+            else:
+                output['text'] = self._texts[data_index][np.random.randint(0, 19)]
         return output
     
     def _get_data(self, data_index, frame_ix):

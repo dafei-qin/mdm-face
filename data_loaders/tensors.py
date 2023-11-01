@@ -112,6 +112,9 @@ def verts_collate(batch):
         action_text = [b['action_text']for b in batch]
         cond['y'].update({'action_text': action_text})
 
+    if 'text' in batch[0]:
+        text = [b['text'] for b in batch]
+        cond['y'].update({'text': text})
     # inpainting and masks
     if 'inpainting_mask' in batch[0]:
         _batch = [b['inpainting_mask'] for b in batch]

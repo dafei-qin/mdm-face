@@ -96,6 +96,7 @@ def add_model_options(parser):
     group.add_argument("--cond_audio", action='store_true', help='Condition the model on audio inputs. Currently work on BIWI only')
     group.add_argument("--cond_var", action='store_true', help='Condition the model on the variance of the input FACS. Currently work on FACS only')
     group.add_argument("--cond_exp", action='store_true', help='Condition the model on the action of expressions, currently work on MEAD FACS only')
+    group.add_argument("--cond_text", action='store_true', help='Condition the model on the action texts, currently work on celebv-text FACS only')
     group.add_argument("--num_frames", default=60, type=int,
                        help="Limit for the maximal number of frames. In HumanML3D and KIT this field is ignored.")
 
@@ -243,6 +244,8 @@ def get_cond_mode(args):
     if args.unconstrained:
         cond_mode = 'no_cond'
     elif args.dataset in ['kit', 'humanml']:
+        cond_mode = 'text'
+    elif args.cond_text:
         cond_mode = 'text'
     else:
         cond_mode = 'action'
