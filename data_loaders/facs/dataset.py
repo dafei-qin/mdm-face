@@ -24,7 +24,11 @@ class facs_data(Dataset):
         if 'mead' in datapath.lower():
             mead = True
             print('Detected MEAD dataset')
-        facs, facs_mean, facs_std, names = pickle.load(open(os.path.join(datapath, 'facs.pkl'), 'rb')).values()
+        try:
+            facs, facs_mean, facs_std, names = pickle.load(open(os.path.join(datapath, 'facs.pkl'), 'rb')).values()
+        except ValueError:
+            facs, facs_mean, facs_std, names, timesteps = pickle.load(open(os.path.join(datapath, 'facs.pkl'), 'rb')).values()
+
         trans, trans_mean, trans_std = pickle.load(open(os.path.join(datapath, 'trans.pkl'), 'rb')).values()
         dof, dof_mean, dof_std = pickle.load(open(os.path.join(datapath, 'dof.pkl'), 'rb')).values()
         if mead:
